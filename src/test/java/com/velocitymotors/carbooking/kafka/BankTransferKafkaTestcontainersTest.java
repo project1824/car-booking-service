@@ -22,6 +22,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
+import com.velocitymotors.carbooking.AbstractPostgresIntegrationTest;
 import com.velocitymotors.carbooking.entity.Booking;
 import com.velocitymotors.carbooking.enums.BookingStatus;
 import com.velocitymotors.carbooking.enums.PaymentMode;
@@ -34,12 +35,12 @@ import com.velocitymotors.carbooking.repository.BookingRepository;
  * build (see the "testcontainers" tag exclusion in pom.xml's surefire config) since it
  * requires Docker to be running - kept opt-in so `mvn test`/`mvn verify` never depend on it.
  *
- * Run explicitly with: mvn test -Dtest=BankTransferKafkaTestcontainersTest -DexcludedGroups=
+ * Run explicitly with: mvn test -Dtest=BankTransferKafkaTestcontainersTest -Dexcluded.test.groups=
  */
 @Tag("testcontainers")
 @Testcontainers
 @SpringBootTest
-class BankTransferKafkaTestcontainersTest {
+class BankTransferKafkaTestcontainersTest extends AbstractPostgresIntegrationTest {
 
     @Container
     static KafkaContainer kafkaContainer = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.1"))

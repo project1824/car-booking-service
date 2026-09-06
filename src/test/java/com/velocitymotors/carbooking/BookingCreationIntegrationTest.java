@@ -40,14 +40,15 @@ import okhttp3.mockwebserver.MockWebServer;
 
 /**
  * True end-to-end integration test for booking creation: real embedded HTTP server,
- * real BookingService/PaymentStrategy wiring, real H2 persistence via BookingRepository.
- * Only the external credit-card-validation-service is replaced, with a MockWebServer
- * standing in for it - everything else in the request path is the actual production code.
+ * real BookingService/PaymentStrategy wiring, real PostgreSQL persistence (via
+ * Testcontainers) through BookingRepository. Only the external credit-card-validation-service
+ * is replaced, with a MockWebServer standing in for it - everything else in the request
+ * path is the actual production code.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureTestRestTemplate
 @EmbeddedKafka(partitions = 1, topics = {"bank-transfer-payment-events"}, bootstrapServersProperty = "spring.kafka.bootstrap-servers")
-class BookingCreationIntegrationTest {
+class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
 
     private static MockWebServer creditCardMockServer;
 

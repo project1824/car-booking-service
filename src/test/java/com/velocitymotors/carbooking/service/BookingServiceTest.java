@@ -30,6 +30,8 @@ import com.velocitymotors.carbooking.enums.VehicleCategory;
 import com.velocitymotors.carbooking.exception.InvalidBookingDurationException;
 import com.velocitymotors.carbooking.exception.InvalidVehicleException;
 import com.velocitymotors.carbooking.exception.MissingPaymentReferenceException;
+import com.velocitymotors.carbooking.exception.PaymentReferenceAlreadyUsedException;
+import com.velocitymotors.carbooking.exception.VehicleUnavailableException;
 import com.velocitymotors.carbooking.payment.PaymentResult;
 import com.velocitymotors.carbooking.payment.PaymentStrategy;
 import com.velocitymotors.carbooking.repository.BookingRepository;
@@ -146,6 +148,51 @@ class BookingServiceTest {
                 .isInstanceOf(IllegalStateException.class);
 
         verify(repository, never()).save(any());
+    }
+
+    @Test
+    void rejectsBookingWhenVehicleHasOverlappingActiveBooking() {
+        when(repository.existsOverlappingActiveBooking("VEH12345",
+                LocalDate.of(2026, 9, 20), LocalDate.of(2026, 9, 22)))
+                .thenReturn(true);
+
+        BookingRequest request = bookingRequest(PaymentMode.CASH, null);
+
+        assertThatThrownBy(() -> bookingService.createBooking(request))
+                .isInstanceOf(VehicleUnavailableException.class);
+
+        verify(repository).lockVehicle("VEH12345");
+        verify(repository, never()).save(any());
+        verify(idGenerator, never()).generate();
+    }
+
+    @Test
+    void rejectsCreditCardBookingWhenPaymentReferenceAlreadyConfirmedElsewhere() {
+        when(repository.existsByPaymentReferenceAndStatus("DL123456789", BookingStatus.CONFIRMED))
+                .thenReturn(true);
+
+        BookingRequest request = bookingRequest(PaymentMode.CREDIT_CARD, "DL123456789");
+
+        assertThatThrownBy(() -> bookingService.createBooking(request))
+                .isInstanceOf(PaymentReferenceAlreadyUsedException.class);
+
+        verify(repository).lockPaymentReference("DL123456789");
+        verify(repository, never()).save(any());
+        verify(idGenerator, never()).generate();
+    }
+
+    @Test
+    void doesNotCheckPaymentReferenceReuseForNonCreditCardModes() {
+        when(idGenerator.generate()).thenReturn("BKG0000001");
+        when(strategy.process(any(BookingRequest.class), eq("BKG0000001")))
+                .thenReturn(new PaymentResult(BookingStatus.CONFIRMED));
+
+        BookingRequest request = bookingRequest(PaymentMode.CASH, null);
+
+        bookingService.createBooking(request);
+
+        verify(repository, never()).lockPaymentReference(any());
+        verify(repository, never()).existsByPaymentReferenceAndStatus(any(), any());
     }
 
     private BookingRequest bookingRequest(PaymentMode paymentMode, String paymentReference) {

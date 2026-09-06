@@ -2,21 +2,21 @@ package com.velocitymotors.carbooking.kafka;
 
 import java.time.Instant;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.velocitymotors.carbooking.logging.MdcContext;
 import com.velocitymotors.carbooking.repository.BookingRepository;
 
+import lombok.extern.slf4j.Slf4j;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
+@Slf4j
 @Component
 public class BankTransferPaymentEventListener {
 
-    private static final Logger log = LoggerFactory.getLogger(BankTransferPaymentEventListener.class);
     private static final int MIN_TRANSACTION_DETAILS_LENGTH = 23;
     private static final int BOOKING_ID_LENGTH = 10;
 
@@ -41,6 +41,7 @@ public class BankTransferPaymentEventListener {
             log.warn("Ignoring unparseable bank-transfer-payment-event: {}", message, ex);
             return;
         }
+        log.debug("Parsed bank-transfer-payment-event paymentId={}", event.paymentId());
 
         String details = event.transactionDetails();
         String trimmed = details == null ? "" : details.strip();
@@ -52,11 +53,13 @@ public class BankTransferPaymentEventListener {
 
         String bookingId = trimmed.substring(trimmed.length() - BOOKING_ID_LENGTH);
 
-        int updated = repository.confirmIfPending(bookingId, Instant.now());
-        if (updated == 0) {
-            log.warn("No PENDING_PAYMENT booking found for bookingId={} (paymentId={})", bookingId, event.paymentId());
-        } else {
-            log.info("Booking {} confirmed via bank transfer payment {}", bookingId, event.paymentId());
-        }
+        MdcContext.withBookingId(bookingId, () -> {
+            int updated = repository.confirmIfPending(bookingId, Instant.now());
+            if (updated == 0) {
+                log.warn("No PENDING_PAYMENT booking found for bookingId={} (paymentId={})", bookingId, event.paymentId());
+            } else {
+                log.info("Booking {} confirmed via bank transfer payment {}", bookingId, event.paymentId());
+            }
+        });
     }
 }

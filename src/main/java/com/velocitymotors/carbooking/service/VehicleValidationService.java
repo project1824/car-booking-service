@@ -6,15 +6,20 @@ import org.springframework.stereotype.Component;
 
 import com.velocitymotors.carbooking.exception.InvalidVehicleException;
 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
 @Component
 public class VehicleValidationService {
 
     private static final Pattern VALID_VEHICLE_ID = Pattern.compile("^[A-Z0-9]{5,10}$");
-    
+
     public void validate(String vehicleId) {
         if (vehicleId == null || !VALID_VEHICLE_ID.matcher(vehicleId).matches()) {
+            log.warn("Vehicle ID failed validation: {}", vehicleId);
             throw new InvalidVehicleException("Invalid vehicle ID: " + vehicleId);
         }
+        log.debug("Vehicle ID passed validation: {}", vehicleId);
     }
 
 }

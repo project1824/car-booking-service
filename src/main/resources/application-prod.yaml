@@ -1,0 +1,9 @@
+# Activate with SPRING_PROFILES_ACTIVE=prod (or --spring.profiles.active=prod).
+# Switches console logging from the human-readable pattern in application.yaml to
+# structured JSON (Elastic Common Schema), which log aggregators (ELK, Datadog, etc.)
+# can parse field-by-field instead of regex-scraping plain text. MDC fields (requestId,
+# bookingId) are automatically included as top-level JSON fields.
+logging:
+  structured:
+    format:
+      console: ecs

@@ -6,11 +6,14 @@ A Spring Boot microservice for **Velocity Motors** that manages car rental booki
 
 - **Java 21**, **Spring Boot 4.1.1** (Spring Framework 7 / Jackson 3)
 - **Spring Web MVC** — REST API
-- **Spring Data JPA** + **H2** (in-memory) — persistence
+- **Spring Data JPA** + **PostgreSQL** — persistence
 - **Spring for Apache Kafka** — consumes `bank-transfer-payment-events`
 - **Spring WebFlux's `WebClient`** — calls the external credit-card-validation-service (no reactive server is run; `WebClient` is used purely as an HTTP client)
-- **Lombok** — reduces entity boilerplate
+- **Spring Boot Actuator** — health, liveness, and readiness endpoints for Kubernetes
+- **Spring Framework 7 native API versioning** — see API Versioning below
+- **Lombok** — reduces entity boilerplate (including `@Slf4j` for every class that logs)
 - **Maven** — build
+- **Docker** — multi-stage build for deployment
 
 ## Architecture
 
@@ -25,7 +28,9 @@ payment/        PaymentStrategy + one implementation per payment mode (Strategy 
 client/         CreditCardValidationClient (+ impl), client/dto/*
 kafka/          KafkaConsumerConfig, BankTransferPaymentEvent, BankTransferPaymentEventListener
 scheduler/      BookingCancellationScheduler
-config/         ClockConfig, WebClientConfig
+config/         ClockConfig, WebClientConfig, WebConfig (API versioning)
+web/            CorrelationIdFilter               — MDC request-id tagging
+logging/        MethodTraceLoggingAspect (AOP), MdcContext
 exception/      GlobalExceptionHandler + one exception per failure case
 ```
 
@@ -68,7 +73,18 @@ exception/      GlobalExceptionHandler + one exception per failure case
 | Bank transfer requested with rental start already inside the 48h cancellation window | 400 |
 | Credit card validation returned `REJECTED` (or any non-`APPROVED` status) | 422 |
 | credit-card-validation-service unreachable or returned an error | 502 |
+| Unrecognized `X-API-Version` (see API Versioning below) | 400 |
 | Anything unexpected | 500 |
+
+### API Versioning
+
+Uses Spring Framework 7's native API versioning support (`WebMvcConfigurer.configureApiVersioning`), not a hand-rolled URL-prefix or header scheme. Clients specify a version via the `X-API-Version` header; the current (and only) version is `1.0`, which is also the configured default — so omitting the header entirely (as every existing client and test does) still resolves correctly. This is purely additive groundwork: a `2.0` handler can be added to `BookingController` later without breaking whatever is still calling the `1.0` contract.
+
+```bash
+curl -X POST http://localhost:8082/booking -H "X-API-Version: 1.0" -H "Content-Type: application/json" -d '{...}'
+```
+
+An unrecognized version (e.g. `X-API-Version: 2.0`, which doesn't exist yet) returns a clean `400` with a clear message, rather than a generic `500` — handled by a dedicated `ResponseStatusException` mapping in `GlobalExceptionHandler`, since Spring's own `InvalidApiVersionException` already carries the correct status and just needs to not be swallowed by the catch-all handler.
 
 ### Payment flows
 
@@ -88,6 +104,25 @@ The service consumes JSON messages shaped:
 
 A scheduled job (`BookingCancellationScheduler`, interval configurable) checks every `PENDING_PAYMENT` bank-transfer booking and cancels it once the current time reaches `rentalStartDate` (at midnight) minus the configured cancellation window (default 48h). Cancellation uses the same atomic-conditional-update mechanism as Kafka confirmation, so the two can never race into an inconsistent state (see Assumptions).
 
+## Health Checks (`/actuator/*`)
+
+- `GET /actuator/health` — overall status, aggregating every registered health indicator (DB, Kafka, disk space, etc.)
+- `GET /actuator/health/liveness` — **process-health only**, no external dependency checks. Wired to a Kubernetes `livenessProbe`. Kept deliberately minimal: liveness failures cause Kubernetes to *restart* the pod, and restarting a healthy process won't fix a downed database or broker — mixing dependency checks into liveness just causes pointless restart churn during an outage.
+- `GET /actuator/health/readiness` — includes the app's own readiness state **plus the database check**, but *not* Kafka. Readiness failures pull the pod out of the Service's load-balancer rotation. A downed database means the app genuinely can't serve any request, so that should fail readiness. A downed Kafka broker only affects the asynchronous bank-transfer confirmation path — `POST /booking` for `CASH`/`DIGITAL_WALLET`/`CREDIT_CARD` still works fine — so it deliberately isn't wired into readiness, to avoid taking a still-mostly-functional pod out of rotation.
+
+## Docker & Kubernetes
+
+Build and run the container directly:
+```bash
+docker build -t car-booking-service:latest .
+docker run -p 8082:8082 car-booking-service:latest
+```
+The `Dockerfile` is a multi-stage build (JDK 21 to compile, JRE 21 to run) so the resulting image doesn't carry a full JDK or the Maven build cache, and runs as a non-root user.
+
+**Important when containerized or deployed to Kubernetes:** `KAFKA_BOOTSTRAP_SERVERS` and `CREDIT_CARD_SERVICE_BASE_URL` both default to `localhost:...`, which only resolves correctly for a non-containerized local run — inside a container, `localhost` refers to the container itself, not the host or a sibling service. Override both env vars to point at the real Kafka broker and credit-card service addresses in your environment.
+
+Example manifests are in [`k8s/`](k8s/) (`deployment.yaml`, `service.yaml`, `secret-example.yaml`), wiring the liveness/readiness endpoints above into real Kubernetes probes. Since state lives in PostgreSQL rather than in-process, the deployment runs `replicas: 2` to demonstrate real horizontal scaling.
+
 ## Assumptions & Design Decisions
 
 The assignment states *"all details provided are sufficient; you may make additional logical assumptions when needed."* The brief itself contains some internal gaps/inconsistencies; here's every non-obvious decision made to resolve them, and why:
@@ -105,23 +140,23 @@ The assignment states *"all details provided are sufficient; you may make additi
 11. **The credit-card-validation-service's sample server URL in the given YAML is malformed** (`http//:localhost:9090//host/credit-card-payment-api`). A corrected, sane default is used, configurable via `credit-card-validation-service.base-url`.
 12. **Kafka message consumption uses plain `String` + manual JSON parsing (via Jackson's `ObjectMapper`), not a typed Kafka `JsonDeserializer`.** Spring Kafka 4.0's `JsonDeserializer` is deprecated-for-removal in favor of a Jackson-3-only replacement whose exact API wasn't something we could verify reliably; the `String`-based approach uses only stable, well-understood APIs and gives explicit control over malformed-message handling in one place.
 13. **Avro + Schema Registry were deliberately not used** for the Kafka event, even though this is a payments-adjacent scenario where that's common in real systems. The assignment gives a plain descriptive JSON structure (not a schema file, unlike the OpenAPI spec it did provide for the other integration) and no schema registry endpoint — introducing one would be unrequested infrastructure the grader can't run.
-14. **A Testcontainers-based Kafka integration test exists but is excluded from the default build**, since it requires Docker and the assignment's hard requirement is that the code "must build successfully." The default suite uses Spring Kafka's embedded (in-process) broker instead; see Testing below for how to run the Testcontainers version explicitly.
+14. **An additional Testcontainers-based Kafka integration test exists** (`BankTransferKafkaTestcontainersTest`), tagged and excluded from the default build so it doesn't add to the Docker dependency below beyond what's already required — it verifies the same scenario against a real Kafka broker instead of the embedded one.
+15. **The service uses PostgreSQL (via Testcontainers) for every `@SpringBootTest`, not H2.** This was a deliberate choice for full test/production parity over the alternative (H2 for speed, real Postgres only in production). The consequence, stated plainly: the *entire* test suite now requires Docker to run, not just the opt-in Testcontainers Kafka test — `mvn clean verify` will fail without Docker available. If building in a Docker-less environment, `mvn clean package -DskipTests` still compiles and packages the application; running the real test suite requires Docker to be running, same as `docker compose up` already does for the local Kafka/Postgres dev setup.
+16. **API versioning uses a header (`X-API-Version`), not a URL path prefix (`/v1/booking`).** Nothing in the assignment asks for versioning at all — this is added as a production-readiness demonstration. A header keeps the URL stable across versions and doesn't disturb the existing `/booking` path any of the 42 tests or the assignment's own examples reference; a path-based scheme would have meant renaming the endpoint everywhere for no functional benefit. The default version (`1.0`) means this is purely additive — no existing caller needs to change anything.
 
 ## Running Locally
 
-**Prerequisites:** JDK 21, Maven (or use the included `./mvnw`).
-
-```bash
-./mvnw spring-boot:run
-```
-The app starts on **port 8081** (`server.port` in `application.yaml`) against an in-memory H2 database — no external setup required for the REST API itself. The H2 console is available at `http://localhost:8081/h2-console` (the JDBC URL is printed in the startup logs, since it's not pinned to a fixed name).
-
-### Running Kafka locally (to exercise the bank-transfer flow)
+**Prerequisites:** JDK 21, Maven (or use the included `./mvnw`), Docker (for PostgreSQL and Kafka).
 
 ```bash
 docker compose up -d
+./mvnw spring-boot:run
 ```
-Starts a single-node Kafka broker (KRaft mode, no Zookeeper container needed) on `localhost:9092`. Create the topic once if it doesn't already exist:
+The app starts on **port 8082** (`server.port` in `application.yaml`) against the PostgreSQL instance started by `docker-compose.yml`. Both PostgreSQL and Kafka connection settings are fully overridable via environment variables — see Configuration Reference below.
+
+### Running Kafka locally (to exercise the bank-transfer flow)
+
+`docker compose up -d` (above) already starts both PostgreSQL and a single-node Kafka broker (KRaft mode, no Zookeeper container needed) on `localhost:9092`. Create the Kafka topic once if it doesn't already exist:
 ```bash
 docker exec car-booking-kafka /opt/kafka/bin/kafka-topics.sh --create --topic bank-transfer-payment-events --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1 --if-not-exists
 ```
@@ -133,19 +168,26 @@ docker exec -it car-booking-kafka /opt/kafka/bin/kafka-console-producer.sh --boo
 {"paymentId":"PAY001","senderAccountNumber":"ACC123456","paymentAmount":500.00,"transactionDetails":"TXN987654321 BKG0000001"}
 ```
 
+**Troubleshooting: `password authentication failed for user "car_booking"` on local run.** If you have PostgreSQL already installed and running natively on your machine (outside Docker), it's likely already bound to the default port 5432. `docker-compose.yml` deliberately maps this project's Postgres container to host port **5433** (not 5432) for exactly this reason, matched by `application.yaml`'s `DB_PORT` default — but if you've overridden `DB_PORT` back to `5432` for any reason and see this error, that's almost certainly a collision with a pre-existing local Postgres instance, not a real credentials problem. Confirm with `Get-Process -Name postgres` (Windows) or `lsof -i :5432` (macOS/Linux) before assuming the container's config is wrong.
+
 ## Testing
 
 ```bash
 mvn clean verify
 ```
-Runs the full default suite — no Docker required. Covers:
+**Requires Docker to be running** — every `@SpringBootTest` in this suite uses a real PostgreSQL instance via Testcontainers (see Assumptions #15). Covers:
 
-- **Unit**: `BookingIdGeneratorTest`, `DigitalWalletPaymentStrategyTest`, `BankTransferPaymentStrategyTest`, `CreditCardPaymentStrategyTest`, `BookingServiceTest`, `BankTransferPaymentEventListenerTest`, `BookingCancellationSchedulerTest` (deterministic 48h-boundary testing via an injectable `Clock` — no real-time waiting needed)
-- **HTTP layer**: `BookingControllerTest` (MockMvc — success path, Bean Validation wiring, and every exception→status mapping through `GlobalExceptionHandler`)
-- **External client**: `CreditCardValidationClientImplTest` (OkHttp `MockWebServer` — verifies every response shape the OpenAPI spec documents)
-- **Kafka integration**: `BankTransferKafkaIntegrationTest` (`@EmbeddedKafka` — full Spring context, real JSON over an in-process broker, real H2 write)
+- **Unit** (no Spring context, no Docker): `BookingIdGeneratorTest`, `DigitalWalletPaymentStrategyTest`, `BankTransferPaymentStrategyTest`, `CreditCardPaymentStrategyTest`, `BookingServiceTest`, `BankTransferPaymentEventListenerTest`, `BookingCancellationSchedulerTest` (deterministic 48h-boundary testing via an injectable `Clock` — no real-time waiting needed)
+- **HTTP layer** (no Docker): `BookingControllerTest` (MockMvc, service mocked — success path, Bean Validation wiring, and every exception→status mapping through `GlobalExceptionHandler`)
+- **External client** (no Docker): `CreditCardValidationClientImplTest` (OkHttp `MockWebServer` — verifies every response shape the OpenAPI spec documents)
+- **True end-to-end** (`@SpringBootTest`, `WebEnvironment.RANDOM_PORT`, real `TestRestTemplate` calls over a real embedded server, real PostgreSQL via Testcontainers — no mocks anywhere in the request path except the external credit-card service):
+  - `BookingCreationIntegrationTest` — all four payment-mode outcomes via a real `POST /booking`, each verified against the real database row it produced, plus a full round trip where a booking created via the real endpoint is then confirmed by a real Kafka event
+  - `BookingSchedulerIntegrationTest` — a booking created via the real endpoint, then auto-cancelled by the real `BookingCancellationScheduler` bean (time is fast-forwarded via an isolated, per-test controllable `Clock` rather than waiting real hours)
+- **Kafka integration**: `BankTransferKafkaIntegrationTest` (`@EmbeddedKafka` — full Spring context, real JSON over an in-process broker, real PostgreSQL write)
 
-**Optional — Testcontainers-based Kafka integration test** (`BankTransferKafkaTestcontainersTest`), which runs the same scenario against a real Kafka broker in Docker instead of the embedded one. Excluded from the default build; run explicitly (Docker must be running):
+All `@SpringBootTest` classes share one PostgreSQL Testcontainer (via `AbstractPostgresIntegrationTest`, Testcontainers' singleton-container pattern) — started once per test run, not once per test class.
+
+**Optional — Testcontainers-based Kafka integration test** (`BankTransferKafkaTestcontainersTest`), which runs the same Kafka scenario against a real broker in Docker instead of the embedded one. Excluded from the default build; run explicitly:
 ```bash
 mvn test -Dtest=BankTransferKafkaTestcontainersTest -Dexcluded.test.groups=
 ```
@@ -154,9 +196,13 @@ mvn test -Dtest=BankTransferKafkaTestcontainersTest -Dexcluded.test.groups=
 
 | Property | Meaning | Default |
 |---|---|---|
-| `server.port` | HTTP port | `8081` |
+| `server.port` | HTTP port | `8082` |
+| `spring.datasource.url` | PostgreSQL connection | built from `DB_HOST` (`127.0.0.1`), `DB_PORT` (`5433` — deliberately not 5432, see Troubleshooting below), `DB_NAME` (`car_booking`) |
+| `X-API-Version` (request header, not an `application.yaml` property) | API version selector | `1.0` (also the default if omitted) — see API Versioning above |
+| `spring.datasource.username` / `.password` | PostgreSQL credentials | env override: `DB_USERNAME` / `DB_PASSWORD` (both default to `car_booking`, matching `docker-compose.yml`) |
 | `spring.kafka.bootstrap-servers` | Kafka broker address | `localhost:9092` (env override: `KAFKA_BOOTSTRAP_SERVERS`) |
 | `app.kafka.topics.bank-transfer-payment-events` | Topic name | `bank-transfer-payment-events` |
 | `app.booking.cancellation.check-interval-ms` | How often the cancellation scheduler runs | `300000` (5 min) |
 | `app.booking.cancellation.window-hours` | Cancellation/rejection deadline before rental start | `48` |
-| `credit-card-validation-service.base-url` | Base URL for the external validation service | `http://localhost:9090/host/credit-card-payment-api` |
+| `credit-card-validation-service.base-url` | Base URL for the external validation service | `http://localhost:9090/host/credit-card-payment-api` (env override: `CREDIT_CARD_SERVICE_BASE_URL`) |
+| `management.endpoint.health.group.readiness.include` | Indicators contributing to the readiness probe | `readinessState,db` (Kafka deliberately excluded — see Health Checks) |

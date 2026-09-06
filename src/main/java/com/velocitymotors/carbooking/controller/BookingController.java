@@ -13,21 +13,30 @@ import com.velocitymotors.carbooking.dto.BookingResponse;
 import com.velocitymotors.carbooking.service.BookingService;
 
 import jakarta.validation.Valid;
+import lombok.extern.slf4j.Slf4j;
 
+@Slf4j
 @RestController
 @RequestMapping("/booking")
 public class BookingController {
 
-   
     private final BookingService bookingService;
 
     public BookingController(BookingService bookingService) {
         this.bookingService = bookingService;
     }
-    
-    @PostMapping
+
+    @PostMapping(version = "1.0")
     public ResponseEntity<BookingResponse> confirmBooking(@Valid @RequestBody BookingRequest request) {
+        // Deliberately omit customerName/paymentReference from this line - they're
+        // customer PII/payment data and don't belong in application logs.
+        log.info("Received booking request: vehicleId={}, vehicleCategory={}, paymentMode={}, rentalStartDate={}, rentalEndDate={}",
+                request.vehicleId(), request.vehicleCategory(), request.paymentMode(),
+                request.rentalStartDate(), request.rentalEndDate());
+
         BookingResponse response = bookingService.createBooking(request);
+
+        log.info("Booking request completed: bookingId={}, status={}", response.bookingId(), response.status());
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 }

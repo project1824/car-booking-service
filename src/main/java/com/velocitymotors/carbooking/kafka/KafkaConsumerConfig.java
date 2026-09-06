@@ -17,6 +17,9 @@ import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.util.backoff.FixedBackOff;
 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
 @Configuration
 @EnableKafka
 public class KafkaConsumerConfig {
@@ -39,9 +42,12 @@ public class KafkaConsumerConfig {
 
         DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate);
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 3));
+        errorHandler.setRetryListeners((record, ex, deliveryAttempt) ->
+                log.warn("Retry {} processing message at topic={}, partition={}, offset={}: {}",
+                        deliveryAttempt, record.topic(), record.partition(), record.offset(), ex.getMessage()));
         factory.setCommonErrorHandler(errorHandler);
 
         return factory;
     }
- 
+
 }

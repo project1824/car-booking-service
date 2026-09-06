@@ -12,7 +12,10 @@ import com.velocitymotors.carbooking.enums.BookingStatus;
 import com.velocitymotors.carbooking.enums.PaymentMode;
 import com.velocitymotors.carbooking.exception.PaymentDeclinedException;
 
-@Component 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
+@Component
 public class CreditCardPaymentStrategy implements PaymentStrategy{
 
     private final CreditCardValidationClient client;
@@ -28,11 +31,13 @@ public class CreditCardPaymentStrategy implements PaymentStrategy{
 
     @Override
     public PaymentResult process(BookingRequest request, String bookingId) {
-        
+
         PaymentStatusResponse response = client.checkStatus(request.paymentReference());
         if("APPROVED".equalsIgnoreCase(response.status())) {
+            log.info("Booking {} confirmed via credit card, validation status={}", bookingId, response.status());
             return new PaymentResult(BookingStatus.CONFIRMED);
         }
+        log.warn("Booking {} credit card payment declined, validation status={}", bookingId, response.status());
         throw new PaymentDeclinedException("Credit card payment was not approved, status=" + response.status());
     }
 

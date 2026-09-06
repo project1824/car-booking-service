@@ -18,6 +18,7 @@ import org.springframework.kafka.test.EmbeddedKafkaBroker;
 import org.springframework.kafka.test.context.EmbeddedKafka;
 import org.springframework.kafka.test.utils.KafkaTestUtils;
 
+import com.velocitymotors.carbooking.AbstractPostgresIntegrationTest;
 import com.velocitymotors.carbooking.entity.Booking;
 import com.velocitymotors.carbooking.enums.BookingStatus;
 import com.velocitymotors.carbooking.enums.PaymentMode;
@@ -30,7 +31,7 @@ import com.velocitymotors.carbooking.repository.BookingRepository;
         topics = {"bank-transfer-payment-events"},
         bootstrapServersProperty = "spring.kafka.bootstrap-servers"
 )
-class BankTransferKafkaIntegrationTest {
+class BankTransferKafkaIntegrationTest extends AbstractPostgresIntegrationTest {
 
     @Autowired
     private EmbeddedKafkaBroker embeddedKafkaBroker;

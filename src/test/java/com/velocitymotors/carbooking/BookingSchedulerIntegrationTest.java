@@ -39,7 +39,7 @@ import com.velocitymotors.carbooking.scheduler.BookingCancellationScheduler;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureTestRestTemplate
-class BookingSchedulerIntegrationTest {
+class BookingSchedulerIntegrationTest extends AbstractPostgresIntegrationTest {
 
     @Autowired
     private TestRestTemplate restTemplate;

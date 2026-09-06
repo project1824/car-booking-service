@@ -6,7 +6,10 @@ import org.springframework.stereotype.Component;
 
 import com.velocitymotors.carbooking.repository.BookingRepository;
 
-@Component 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
+@Component
 public class BookingIdGenerator {
 
     private static final String PREFIX = "BKG";
@@ -18,7 +21,9 @@ public class BookingIdGenerator {
 
     public String generate() {
         long next = sequence.incrementAndGet() % 10_000_000L;
-        return PREFIX + String.format("%07d", next);
+        String id = PREFIX + String.format("%07d", next);
+        log.debug("Generated booking id {}", id);
+        return id;
     }
 
 }

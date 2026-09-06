@@ -15,3 +15,20 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: car-booking-postgres
+    ports:
+      # Host port 5433, not the default 5432 - avoids colliding with any
+      # PostgreSQL already installed/running natively on the host machine.
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: car_booking
+      POSTGRES_USER: car_booking
+      POSTGRES_PASSWORD: car_booking
+    volumes:
+      - car-booking-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  car-booking-postgres-data:
