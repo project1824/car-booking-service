@@ -1,3 +1,22 @@
+server:
+  port: 8081
 spring:
   application:
     name: car-booking-service
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: car-booking-service
+      auto-offset-reset: earliest
+    producer:
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+app:
+  kafka:
+    topics:
+      bank-transfer-payment-events: bank-transfer-payment-events
+  booking:
+      cancellation:
+        check-interval-ms: 300000
+        window-hours: 48
+credit-card-validation-service:
+  base-url: http://localhost:9090/host/credit-card-payment-api

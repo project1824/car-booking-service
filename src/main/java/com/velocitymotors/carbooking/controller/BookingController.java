@@ -12,8 +12,10 @@ import com.velocitymotors.carbooking.dto.BookingRequest;
 import com.velocitymotors.carbooking.dto.BookingResponse;
 import com.velocitymotors.carbooking.service.BookingService;
 
+import jakarta.validation.Valid;
+
 @RestController
-@RequestMapping("/bookings")
+@RequestMapping("/booking")
 public class BookingController {
 
    
@@ -24,11 +26,8 @@ public class BookingController {
     }
     
     @PostMapping
-    public ResponseEntity<BookingResponse> confirmBooking(@RequestBody BookingRequest request) {
+    public ResponseEntity<BookingResponse> confirmBooking(@Valid @RequestBody BookingRequest request) {
         BookingResponse response = bookingService.createBooking(request);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
-
     }
 }
-
-
