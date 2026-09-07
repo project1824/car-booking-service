@@ -139,6 +139,15 @@ The only synchronous external HTTP dependency in the booking path is the credit-
 
 **Considered and rejected: OpenFeign as the client.** Two variants were evaluated for this same call: a hand-written `@FeignClient` interface (Spring Cloud OpenFeign) compiled and ran cleanly against this stack, but was set aside since it doesn't add real value for a single external, non-load-balanced third-party endpoint - Feign's main advantage is declarative load-balancing across sibling microservice instances via service discovery, which doesn't apply here. Generating the client from `Assignment03_creditcardpayment_api.yaml` via `openapi-generator-maven-plugin`'s `feign` library target was also tried and confirmed (via a real build attempt) to hard-fail: it hardcodes both Jackson 2 (`com.fasterxml.jackson.*`, incompatible with this project's Jackson 3-only classpath) and the pre-Jakarta `javax.annotation` namespace. `WebClient` was kept as-is.
 
+## Database Migrations (Flyway)
+
+Schema is owned by Flyway, not Hibernate. `spring.jpa.hibernate.ddl-auto` is `validate` - on startup, Hibernate checks its entity mappings against whatever Flyway has already created and fails fast on drift, instead of silently auto-altering the schema the way `ddl-auto: update` did before.
+
+- Migrations live in [`src/main/resources/db/migration`](src/main/resources/db/migration); `V1__create_bookings_table.sql` creates the `bookings` table plus three indexes matching the repository's actual query patterns (`vehicle_id, status` for the double-booking check, `payment_reference, status` for the payment-reference-reuse check, `payment_mode, status` for the cancellation scheduler's lookup) - none of these existed under Hibernate's auto-DDL, since it never generates indexes beyond the primary key.
+- The `Booking` entity now carries explicit `@Column(nullable = false, length = ...)` annotations matching the migration, tightening constraints Hibernate's auto-DDL never actually enforced (every field but `paymentReference` is genuinely required).
+- **Found a real Boot 4.1.1 gap while wiring this up**: adding just `flyway-core` + `flyway-database-postgresql` compiled fine but Flyway silently never ran (no log output, no `flyway_schema_history` table) - confirmed via `unzip -l` on the actual jar that `spring-boot-autoconfigure:4.1.1` no longer bundles Flyway's autoconfiguration at all. Like several other Boot 4 modules already documented above, it moved into its own dedicated `spring-boot-starter-flyway` artifact. Adding that starter (alongside `flyway-database-postgresql`, which still isn't bundled by the starter) fixed it - verified via a real app boot showing Flyway's migration log output and the resulting schema.
+- Local dev/Testcontainers Postgres instances start empty, so migrations always run from `V1` on a fresh database - no separate baseline step needed for this project.
+
 ## Docker & Kubernetes
 
 Build and run the container directly:
@@ -235,3 +244,5 @@ mvn test -Dtest=BankTransferKafkaTestcontainersTest -Dexcluded.test.groups=
 | `app.booking.cancellation.window-hours` | Cancellation/rejection deadline before rental start | `48` |
 | `credit-card-validation-service.base-url` | Base URL for the external validation service | `http://localhost:9090/host/credit-card-payment-api` (env override: `CREDIT_CARD_SERVICE_BASE_URL`) |
 | `management.endpoint.health.group.readiness.include` | Indicators contributing to the readiness probe | `readinessState,db` (Kafka deliberately excluded — see Health Checks) |
+| `spring.jpa.hibernate.ddl-auto` | Schema management mode | `validate` — Flyway owns the schema, Hibernate only checks its mappings match (see Database Migrations) |
+| `spring.flyway.locations` | Where Flyway looks for migration scripts | `classpath:db/migration` (the default — set explicitly for documentation) |

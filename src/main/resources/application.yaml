@@ -10,11 +10,17 @@ spring:
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
-      ddl-auto: update
+      # Flyway (below) owns the schema now; Hibernate only validates its entity
+      # mappings against what Flyway already created, catching a drift between the two
+      # at startup instead of silently auto-altering the schema.
+      ddl-auto: validate
     show-sql: false
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     consumer:
@@ -77,7 +83,5 @@ logging:
   level:
     root: INFO
     com.velocitymotors.carbooking: INFO
-    # Kafka's client libraries are extremely chatty at INFO (reconnects, rebalances,
-    # metadata refreshes) - WARN keeps genuine problems visible without drowning them out.
     org.apache.kafka: WARN
     org.hibernate: WARN
