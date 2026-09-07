@@ -1,0 +1,64 @@
+# Three layers of security scanning, run before anything gets built into an image:
+#   1. Dependency / SCA scan (OWASP Dependency-Check) - known CVEs in third-party jars.
+#   2. Secret scanning (gitleaks) - catches a committed credential before it ships.
+#   3. SAST - a placeholder. There's no credible free/OSS SAST for Java on par with a
+#      commercial tool; wire in whatever your org licenses (Checkmarx, Fortify,
+#      Snyk Code, Semgrep App). SonarQube (previous stage) does cover some of this
+#      ground via its own Security Hotspots rules, but isn't a full SAST replacement.
+steps:
+  - task: Cache@2
+    displayName: 'Restore cached Maven local repository'
+    inputs:
+      key: 'maven | "$(Agent.OS)" | **/pom.xml'
+      restoreKeys: |
+        maven | "$(Agent.OS)"
+      path: '$(MAVEN_CACHE_FOLDER)'
+
+  - task: Maven@4
+    displayName: 'Dependency scan (OWASP Dependency-Check)'
+    inputs:
+      mavenPomFile: 'pom.xml'
+      # Pinned plugin version invoked directly - doesn't need to live in pom.xml since
+      # it's a CI-time-only concern. REPLACE_ME_NVD_API_KEY: request a free key at
+      # https://nvd.nist.gov/developers/request-an-api-key - without one this task is
+      # rate-limited by NVD and can take 20+ minutes on a cold cache.
+      goals: 'org.owasp:dependency-check-maven:9.2.0:check'
+      options: >-
+        -B -Dmaven.repo.local=$(MAVEN_CACHE_FOLDER)
+        -DnvdApiKey=$(nvdApiKey)
+        -Dformat=ALL
+        -DfailBuildOnCVSS=8
+      jdkVersionOption: '1.21'
+    env:
+      nvdApiKey: $(nvdApiKey) # REPLACE_ME: define in a variable group, mark secret
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish dependency-check report'
+    condition: always()
+    inputs:
+      targetPath: '$(System.DefaultWorkingDirectory)/target/dependency-check-report.html'
+      artifact: 'dependency-check-report'
+      publishLocation: 'pipeline'
+
+  - bash: |
+      set -e
+      curl -sSL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz
+      tar -xzf gitleaks.tar.gz gitleaks
+      ./gitleaks detect --source . --redact --report-format sarif --report-path $(Build.ArtifactStagingDirectory)/gitleaks-report.sarif
+    displayName: 'Secret scan (gitleaks)'
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish gitleaks report'
+    condition: always()
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)/gitleaks-report.sarif'
+      artifact: 'gitleaks-report'
+      publishLocation: 'pipeline'
+
+  - bash: |
+      echo "##[warning] SAST placeholder - no licensed SAST tool wired in yet."
+      echo "##[warning] Replace this step with your org's SAST scanner, e.g.:"
+      echo "##[warning]   - Checkmarx: CxSAST/CxFlow task from the marketplace"
+      echo "##[warning]   - Snyk Code: SnykSecurityScan@1 task"
+      echo "##[warning]   - Semgrep: 'semgrep ci' via a bash step with SEMGREP_APP_TOKEN"
+    displayName: 'SAST (REPLACE_ME - placeholder only)'

@@ -1,0 +1,36 @@
+# Lints and packages the Helm chart, using the build number as the chart version so
+# the deployed release is always traceable back to exactly one pipeline run. Published
+# as a pipeline artifact for the deploy stage to download - no external chart
+# repository needed for a single-environment setup like this one. A real multi-team
+# org would more likely push this to a chart repo (an OCI-based one in ACR, or
+# whatever registry the org already standardized on) so other pipelines/teams can
+# pull specific released versions independently of any one pipeline run.
+parameters:
+  - name: chartVersion
+    type: string
+
+steps:
+  - task: HelmInstaller@1
+    displayName: 'Install Helm'
+    inputs:
+      helmVersionToInstall: '3.16.4'
+
+  - bash: |
+      set -e
+      helm lint helm/car-booking-service
+    displayName: 'Helm lint'
+
+  - bash: |
+      set -e
+      helm package helm/car-booking-service \
+        --version ${{ parameters.chartVersion }} \
+        --app-version ${{ parameters.chartVersion }} \
+        --destination $(Build.ArtifactStagingDirectory)/helm
+    displayName: 'Helm package'
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish packaged chart'
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)/helm'
+      artifact: 'helm-chart'
+      publishLocation: 'pipeline'

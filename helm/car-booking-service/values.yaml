@@ -1,0 +1,90 @@
+# Single environment (production) - kept to one values file on purpose, since this
+# assignment doesn't need dev/uat promotion. In a real multi-environment setup you'd
+# split this into a base values.yaml plus a small values-<env>.yaml override per
+# environment (dev/uat/prod), passed together as `-f values.yaml -f values-prod.yaml`
+# so each environment's diff from the base stays small and readable.
+
+replicaCount: 3
+
+image:
+  # REPLACE_ME: your real registry - e.g. an Azure Container Registry the AKS cluster
+  # has pull access to. The pipeline overrides `tag` per build.
+  repository: REPLACE_ME_REGISTRY.azurecr.io/car-booking-service
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: "car-booking-service"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8082
+
+resources:
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+  limits:
+    cpu: "1000m"
+    memory: "768Mi"
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 65
+
+probes:
+  liveness:
+    path: /actuator/health/liveness
+    initialDelaySeconds: 20
+    periodSeconds: 15
+    failureThreshold: 3
+  readiness:
+    path: /actuator/health/readiness
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    failureThreshold: 3
+
+prometheus:
+  scrape: true
+  port: "8082"
+  path: "/actuator/prometheus"
+
+# Plain env vars (non-sensitive). REPLACE_ME values point at in-cluster service DNS
+# names - adjust to match how Kafka/Postgres/the credit-card service are actually
+# reachable from this AKS cluster (a managed Kafka/Postgres offering, a sibling
+# namespace, a private endpoint, etc.).
+env:
+  kafkaBootstrapServers: "REPLACE_ME_KAFKA_BOOTSTRAP_SERVERS:9092"
+  creditCardServiceBaseUrl: "REPLACE_ME_CREDIT_CARD_SERVICE_URL"
+  dbHost: "REPLACE_ME_DB_HOST"
+  dbPort: "5432"
+  dbName: "car_booking"
+  dbUsername: "car_booking"
+  # Activates application-prod.yaml (structured JSON logging) - see main README.
+  springProfile: "prod"
+
+# Secrets. `secrets.create: true` would render templates/secret.yaml from the values
+# below - left false here because a real production namespace shouldn't get its DB
+# password from a plain Helm value at all. Point serviceAccount.annotations below at
+# an Azure Key Vault CSI driver / workload identity setup instead, or an External
+# Secrets Operator - see README "Secrets in a real deployment". The pipeline should
+# never have a real password typed into this file either way.
+secrets:
+  create: false
+  dbPassword: "REPLACE_ME"
+
+serviceAccount:
+  create: true
+  # REPLACE_ME: the AKS workload identity client ID bound to this service's Key Vault
+  # access policy / RBAC role.
+  annotations:
+    azure.workload.identity/client-id: "REPLACE_ME_WORKLOAD_IDENTITY_CLIENT_ID"
+
+podAnnotations: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

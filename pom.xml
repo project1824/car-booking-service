@@ -175,6 +175,29 @@
 				</configuration>
 			</plugin>
 			<plugin>
+				<!-- Code coverage for the SonarQube quality-gate stage in the CI/CD pipeline
+				     (see azure-pipelines.yml) - instruments tests during `mvn verify` and
+				     writes target/site/jacoco/jacoco.xml, which Sonar reads directly. -->
+				<groupId>org.jacoco</groupId>
+				<artifactId>jacoco-maven-plugin</artifactId>
+				<version>0.8.12</version>
+				<executions>
+					<execution>
+						<id>jacoco-prepare-agent</id>
+						<goals>
+							<goal>prepare-agent</goal>
+						</goals>
+					</execution>
+					<execution>
+						<id>jacoco-report</id>
+						<phase>verify</phase>
+						<goals>
+							<goal>report</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-compiler-plugin</artifactId>
 				<executions>

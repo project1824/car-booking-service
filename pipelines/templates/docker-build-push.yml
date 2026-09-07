@@ -1,0 +1,39 @@
+# Builds the image from the existing multi-stage Dockerfile, scans it for known
+# vulnerabilities with Trivy (free, open-source, no account/vendor needed) before it's
+# allowed anywhere near a cluster, then pushes it to Azure Container Registry.
+# Any registry works the same way here (ACR shown; JFrog Artifactory, ECR, GCR would
+# look almost identical) - ACR is used because it's the natural default alongside AKS.
+# Requires a "Docker Registry" service connection (Azure Container Registry type)
+# named to match $(containerRegistryServiceConnection).
+parameters:
+  - name: imageTag
+    type: string
+
+steps:
+  - task: Docker@2
+    displayName: 'Build image'
+    inputs:
+      command: 'build'
+      repository: '$(imageRepository)'
+      dockerfile: '$(System.DefaultWorkingDirectory)/Dockerfile'
+      containerRegistry: '$(containerRegistryServiceConnection)'
+      tags: '${{ parameters.imageTag }}'
+
+  - bash: |
+      set -e
+      curl -sSL -o trivy.tar.gz https://github.com/aquasecurity/trivy/releases/download/v0.56.2/trivy_0.56.2_Linux-64bit.tar.gz
+      tar -xzf trivy.tar.gz trivy
+      ./trivy image \
+        --severity HIGH,CRITICAL \
+        --exit-code 1 \
+        --format table \
+        $(containerRegistryLoginServer)/$(imageRepository):${{ parameters.imageTag }}
+    displayName: 'Trivy image scan (blocking on HIGH/CRITICAL)'
+
+  - task: Docker@2
+    displayName: 'Push image'
+    inputs:
+      command: 'push'
+      repository: '$(imageRepository)'
+      containerRegistry: '$(containerRegistryServiceConnection)'
+      tags: '${{ parameters.imageTag }}'

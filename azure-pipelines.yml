@@ -1,0 +1,120 @@
+# CI/CD pipeline for car-booking-service, deploying to a single production AKS
+# environment: build -> test -> SonarQube quality gate -> security scans -> build,
+# scan & push the Docker image and Helm chart -> manual approval -> deploy -> (only
+# if that deployment fails) manual approval -> rollback.
+#
+# ================================ SETUP CHECKLIST ================================
+# Every REPLACE_ME below (and inside pipelines/templates/*.yml and
+# helm/car-booking-service/values.yaml) needs a real value before this can actually
+# run. See pipelines/README.md for the full list. In short:
+#   1. Service connections: a Docker Registry connection (Azure Container Registry),
+#      SonarQube, and one Azure Resource Manager connection scoped to the production
+#      AKS cluster.
+#   2. A variable group named car-booking-service-production in the Library, holding
+#      at minimum secret variables `dbPassword` and `nvdApiKey`.
+#   3. An Azure DevOps Environment named "production" (auto-created on first run) -
+#      add an Approvals check under Project Settings > Environments > production.
+# ===================================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - README.md
+      - pipelines/README.md
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  MAVEN_CACHE_FOLDER: $(Pipeline.Workspace)/.m2/repository
+  imageRepository: 'car-booking-service'
+  imageTag: '$(Build.BuildId)'
+  chartVersion: '0.1.$(Build.BuildId)'
+
+  # ---- Container registry (REPLACE_ME) ----
+  # Any registry works the same way here (ACR shown; JFrog Artifactory, ECR, GCR
+  # would look almost identical) - ACR is the natural default alongside AKS.
+  containerRegistryServiceConnection: 'REPLACE_ME_ACR_SERVICE_CONNECTION'
+  containerRegistryLoginServer: 'REPLACE_ME_REGISTRY.azurecr.io'
+
+  # ---- SonarQube (REPLACE_ME) ----
+  sonarQubeServiceConnection: 'REPLACE_ME_SONARQUBE_SERVICE_CONNECTION'
+  sonarQubeProjectKey: 'car-booking-service'
+
+  # ---- AKS - production (REPLACE_ME) ----
+  azureServiceConnection: 'REPLACE_ME_AZURE_SERVICE_CONNECTION_PROD'
+  aksResourceGroup: 'REPLACE_ME_AKS_RESOURCE_GROUP_PROD'
+  aksClusterName: 'REPLACE_ME_AKS_CLUSTER_PROD'
+
+stages:
+  # ---------------------------------------------------------------------------
+  - stage: Build
+    displayName: 'Build & Test'
+    jobs:
+      - job: BuildAndTest
+        displayName: 'Compile, unit + integration tests, coverage'
+        steps:
+          # REPLACE_ME in a real org: build-and-test.yml@templates - see note above.
+          - template: pipelines/templates/build-and-test.yml
+
+  # ---------------------------------------------------------------------------
+  - stage: CodeQuality
+    displayName: 'SonarQube Quality Gate'
+    dependsOn: Build
+    jobs:
+      - job: SonarQube
+        steps:
+          - checkout: self
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Reuse compiled classes + coverage from the Build stage'
+            inputs:
+              artifact: 'app-build'
+              path: '$(System.DefaultWorkingDirectory)/target'
+          # REPLACE_ME in a real org: sonarqube/analyze.yml@templates - see note above.
+          - template: pipelines/templates/code-quality-sonarqube.yml
+
+  # ---------------------------------------------------------------------------
+  - stage: SecurityScan
+    displayName: 'Security Scanning'
+    dependsOn: Build
+    jobs:
+      - job: Security
+        steps:
+          # REPLACE_ME in a real org: security/scan.yml@templates - see note above.
+          - template: pipelines/templates/security-scan.yml
+
+  # ---------------------------------------------------------------------------
+  - stage: PackageAndPublish
+    displayName: 'Build Image & Publish Artifacts'
+    dependsOn:
+      - CodeQuality
+      - SecurityScan
+    jobs:
+      - job: DockerImage
+        displayName: 'Build, scan (Trivy), push image'
+        steps:
+          # REPLACE_ME in a real org: docker/build-push.yml@templates - see note above.
+          - template: pipelines/templates/docker-build-push.yml
+            parameters:
+              imageTag: '$(imageTag)'
+
+      - job: HelmChart
+        displayName: 'Package Helm chart'
+        steps:
+          # REPLACE_ME in a real org: helm/package.yml@templates - see note above.
+          - template: pipelines/templates/helm-package.yml
+            parameters:
+              chartVersion: '$(chartVersion)'
+
+  # ---------------------------------------------------------------------------
+  # Approve -> Deploy -> (only on failure) Approve -> Rollback. See the template
+  # itself for exactly how the failure-gated rollback logic works.
+  - template: pipelines/templates/deploy-and-rollback.yml

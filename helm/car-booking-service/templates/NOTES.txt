@@ -1,0 +1,11 @@
+car-booking-service ({{ .Chart.AppVersion }}) deployed to namespace {{ .Release.Namespace }}.
+
+Check rollout status:
+  kubectl rollout status deployment/{{ include "car-booking-service.fullname" . }} -n {{ .Release.Namespace }}
+
+Port-forward to hit it locally:
+  kubectl port-forward svc/{{ include "car-booking-service.fullname" . }} 8082:{{ .Values.service.port }} -n {{ .Release.Namespace }}
+  curl http://localhost:8082/actuator/health
+
+Release history (for rollback):
+  helm history {{ .Release.Name }} -n {{ .Release.Namespace }}

@@ -1,0 +1,40 @@
+# SonarQube static analysis + quality gate. Requires:
+#   1. A "SonarQube" (self-hosted) or "SonarCloud" service connection in
+#      Project Settings > Service connections, named to match $(sonarQubeServiceConnection).
+#   2. The free "SonarQube" (or "SonarCloud") marketplace extension installed for the org.
+#   3. A quality gate configured on the SonarQube project itself (the default gate is
+#      fine to start with) - SonarQubePublish below polls it and fails the pipeline
+#      if the gate fails, so nothing further deploys on a red gate.
+steps:
+  - task: Cache@2
+    displayName: 'Restore cached Maven local repository'
+    inputs:
+      key: 'maven | "$(Agent.OS)" | **/pom.xml'
+      restoreKeys: |
+        maven | "$(Agent.OS)"
+      path: '$(MAVEN_CACHE_FOLDER)'
+
+  - task: SonarQubePrepare@5
+    displayName: 'Prepare SonarQube analysis'
+    inputs:
+      SonarQube: '$(sonarQubeServiceConnection)'
+      scannerMode: 'Other'
+      extraProperties: |
+        sonar.projectKey=$(sonarQubeProjectKey)
+        sonar.projectName=car-booking-service
+        sonar.java.binaries=target/classes
+        sonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+        sonar.junit.reportPaths=target/surefire-reports
+
+  - task: Maven@4
+    displayName: 'Run analysis (mvn sonar:sonar)'
+    inputs:
+      mavenPomFile: 'pom.xml'
+      goals: 'sonar:sonar'
+      options: '-B -Dmaven.repo.local=$(MAVEN_CACHE_FOLDER)'
+      jdkVersionOption: '1.21'
+
+  - task: SonarQubePublish@5
+    displayName: 'Publish result & wait for quality gate'
+    inputs:
+      pollingTimeoutSec: '300'

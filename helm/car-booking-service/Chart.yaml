@@ -1,0 +1,9 @@
+apiVersion: v2
+name: car-booking-service
+description: Velocity Motors car rental booking service
+type: application
+# Chart version - bump manually on structural changes to the chart itself.
+version: 0.1.0
+# App version - the pipeline overrides this at package time with the real build
+# (--set image.tag=$(Build.BuildId) / --app-version), this default is for local use.
+appVersion: "0.0.1-SNAPSHOT"

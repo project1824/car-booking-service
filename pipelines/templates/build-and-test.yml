@@ -1,0 +1,45 @@
+# Compiles, runs the full test suite (unit + real Postgres/Kafka via Testcontainers -
+# needs Docker, which Microsoft-hosted ubuntu-latest agents have preinstalled), and
+# publishes test results + JaCoCo coverage for the SonarQube stage to consume.
+steps:
+  - task: Cache@2
+    displayName: 'Cache Maven local repository'
+    inputs:
+      key: 'maven | "$(Agent.OS)" | **/pom.xml'
+      restoreKeys: |
+        maven | "$(Agent.OS)"
+      path: '$(MAVEN_CACHE_FOLDER)'
+
+  - task: Maven@4
+    displayName: 'Compile'
+    inputs:
+      mavenPomFile: 'pom.xml'
+      goals: 'clean compile'
+      options: '-B -Dmaven.repo.local=$(MAVEN_CACHE_FOLDER)'
+      publishJUnitResults: false
+      jdkVersionOption: '1.21'
+
+  - task: Maven@4
+    displayName: 'Test (unit + integration, real Postgres/Kafka via Testcontainers)'
+    inputs:
+      mavenPomFile: 'pom.xml'
+      # excluded.test.groups is cleared so the opt-in Testcontainers-Kafka test also
+      # runs in CI, unlike the local default (see pom.xml / README Testing section).
+      goals: 'verify'
+      options: '-B -Dmaven.repo.local=$(MAVEN_CACHE_FOLDER) -Dexcluded.test.groups='
+      publishJUnitResults: true
+      testResultsFiles: '**/surefire-reports/TEST-*.xml'
+      jdkVersionOption: '1.21'
+      codeCoverageToolOption: 'JaCoCo'
+
+  - task: PublishCodeCoverageResults@2
+    displayName: 'Publish JaCoCo coverage'
+    inputs:
+      summaryFileLocation: '$(System.DefaultWorkingDirectory)/**/target/site/jacoco/jacoco.xml'
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish built jar'
+    inputs:
+      targetPath: '$(System.DefaultWorkingDirectory)/target'
+      artifact: 'app-build'
+      publishLocation: 'pipeline'

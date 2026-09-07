@@ -1,0 +1,174 @@
+# Single environment: production. Deploy needs a human's sign-off before it runs at
+# all; a rollback needs a *separate* human sign-off, and only even asks for one if the
+# deployment actually failed - a healthy deployment never prompts anyone.
+#
+# Two approval mechanisms are stacked here, use either or both:
+#   1. `environment: production` below creates/references an Azure DevOps Environment.
+#      REPLACE_ME: go to Project Settings > Environments > production > Approvals and
+#      checks > Approvals, and add the real approvers - this can't be set from YAML,
+#      it's a one-time manual setup step.
+#   2. The ManualValidation@0 tasks below are the YAML-native equivalent - they pause
+#      the pipeline and email a named approver, no portal setup required. This is
+#      what actually gates things if step 1 hasn't been configured yet.
+stages:
+  - stage: ApproveDeploy
+    displayName: 'Approve Production Deployment'
+    dependsOn: PackageAndPublish
+    jobs:
+      - job: WaitForDeployApproval
+        pool: server
+        timeoutInMinutes: 4320 # 3 days
+        steps:
+          - task: ManualValidation@0
+            displayName: 'Approve production deployment'
+            inputs:
+              # REPLACE_ME: the real approver email(s)/group for production sign-off.
+              notifyUsers: 'REPLACE_ME_PROD_APPROVERS@yourcompany.com'
+              instructions: >-
+                Review the build, test results, SonarQube quality gate, and security
+                scan results for build $(Build.BuildId) before approving this
+                production deployment of car-booking-service.
+              onTimeout: 'reject'
+
+  - stage: DeployProduction
+    displayName: 'Deploy to Production'
+    dependsOn: ApproveDeploy
+    jobs:
+      - deployment: DeployHelmRelease
+        displayName: 'helm upgrade --install'
+        environment: production
+        pool:
+          vmImage: 'ubuntu-latest'
+        variables:
+          - group: 'car-booking-service-production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: HelmInstaller@1
+                  displayName: 'Install Helm'
+                  inputs:
+                    helmVersionToInstall: '3.16.4'
+
+                - task: DownloadPipelineArtifact@2
+                  displayName: 'Download packaged chart'
+                  inputs:
+                    artifact: 'helm-chart'
+                    path: '$(Pipeline.Workspace)/helm-chart'
+
+                - task: AzureCLI@2
+                  displayName: 'Get AKS credentials'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      set -e
+                      az aks get-credentials \
+                        --resource-group $(aksResourceGroup) \
+                        --name $(aksClusterName) \
+                        --overwrite-existing
+
+                - bash: |
+                    set -e
+                    helm upgrade --install car-booking-service \
+                      "$(Pipeline.Workspace)/helm-chart/car-booking-service-$(chartVersion).tgz" \
+                      --namespace production \
+                      --create-namespace \
+                      -f helm/car-booking-service/values.yaml \
+                      --set image.tag=$(imageTag) \
+                      --set-string secrets.dbPassword="$(dbPassword)" \
+                      --wait --timeout 5m
+                  displayName: 'helm upgrade --install'
+
+                - task: AzureCLI@2
+                  displayName: 'Smoke test - /actuator/health'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      set -e
+                      kubectl -n production run smoke-test-$(Build.BuildId) \
+                        --rm -i --restart=Never --image=curlimages/curl:8.10.1 -- \
+                        curl -sf --max-time 10 http://car-booking-service.production.svc.cluster.local/actuator/health
+
+  # Only reached if DeployProduction failed (a bad rollout or a failed smoke test) -
+  # a healthy deployment skips straight past this and RollbackProduction below.
+  - stage: ApproveRollback
+    displayName: 'Approve Rollback (only if the deployment above failed)'
+    dependsOn: DeployProduction
+    condition: failed()
+    jobs:
+      - job: WaitForRollbackApproval
+        pool: server
+        timeoutInMinutes: 4320
+        steps:
+          - task: ManualValidation@0
+            displayName: 'Approve production rollback'
+            inputs:
+              notifyUsers: 'REPLACE_ME_PROD_APPROVERS@yourcompany.com'
+              instructions: >-
+                Production deployment of build $(Build.BuildId) failed (bad rollout or
+                failed smoke test). Approve rolling back to the previous Helm release?
+              onTimeout: 'reject'
+
+  - stage: RollbackProduction
+    displayName: 'Rollback Production'
+    dependsOn: ApproveRollback
+    # Default condition (succeeded()) already means this is skipped whenever
+    # ApproveRollback was skipped, i.e. whenever the deployment succeeded - spelled
+    # out here anyway so the "only after approval, only after failure" logic is
+    # obvious just from reading this file.
+    condition: succeeded()
+    jobs:
+      - job: Rollback
+        pool:
+          vmImage: 'ubuntu-latest'
+        variables:
+          - group: 'car-booking-service-production'
+        steps:
+          - task: HelmInstaller@1
+            displayName: 'Install Helm'
+            inputs:
+              helmVersionToInstall: '3.16.4'
+
+          - task: AzureCLI@2
+            displayName: 'Get AKS credentials'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -e
+                az aks get-credentials \
+                  --resource-group $(aksResourceGroup) \
+                  --name $(aksClusterName) \
+                  --overwrite-existing
+
+          - bash: helm history car-booking-service --namespace production
+            displayName: 'Show release history (for the log, before rolling back)'
+
+          - task: AzureCLI@2
+            displayName: 'helm rollback to previous revision'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -e
+                helm rollback car-booking-service 0 --namespace production --wait --timeout 5m
+
+          - task: AzureCLI@2
+            displayName: 'Post-rollback smoke test'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -e
+                kubectl -n production run rollback-smoke-test-$(Build.BuildId) \
+                  --rm -i --restart=Never --image=curlimages/curl:8.10.1 -- \
+                  curl -sf --max-time 10 http://car-booking-service.production.svc.cluster.local/actuator/health
