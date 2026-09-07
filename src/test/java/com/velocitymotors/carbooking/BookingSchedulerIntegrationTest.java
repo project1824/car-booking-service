@@ -18,6 +18,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
@@ -60,7 +62,8 @@ class BookingSchedulerIntegrationTest extends AbstractPostgresIntegrationTest {
                 LocalDate.now().plusDays(10), LocalDate.now().plusDays(12),
                 VehicleCategory.SUV, PaymentMode.BANK_TRANSFER, null);
 
-        ResponseEntity<BookingResponse> createResponse = restTemplate.postForEntity("/booking", request, BookingResponse.class);
+        ResponseEntity<BookingResponse> createResponse = restTemplate.exchange(
+                "/booking", HttpMethod.POST, new HttpEntity<>(request, authHeaders()), BookingResponse.class);
 
         assertThat(createResponse.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(createResponse.getBody()).isNotNull();

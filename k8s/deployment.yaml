@@ -50,6 +50,16 @@ spec:
                 secretKeyRef:
                   name: car-booking-db-credentials
                   key: password
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: car-booking-auth-secrets
+                  key: jwt-secret
+            - name: DEMO_USER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: car-booking-auth-secrets
+                  key: demo-user-password
           livenessProbe:
             httpGet:
               path: /actuator/health/liveness

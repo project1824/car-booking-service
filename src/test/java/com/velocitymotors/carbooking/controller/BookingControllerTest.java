@@ -11,7 +11,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -21,9 +23,20 @@ import com.velocitymotors.carbooking.enums.BookingStatus;
 import com.velocitymotors.carbooking.exception.CreditCardServiceUnavailableException;
 import com.velocitymotors.carbooking.exception.InvalidVehicleException;
 import com.velocitymotors.carbooking.exception.PaymentDeclinedException;
+import com.velocitymotors.carbooking.security.JwtAuthenticationEntryPoint;
+import com.velocitymotors.carbooking.security.SecurityConfig;
 import com.velocitymotors.carbooking.service.BookingService;
 
+/**
+ * Imports the real SecurityConfig (not Spring Boot's synthetic default security setup)
+ * so this test exercises the actual authentication/CSRF rules the app runs with, not an
+ * approximation of them. @WithMockUser stands in for a real bearer token - the resource
+ * server only checks a JWT's signature/expiry, so simulating "already authenticated"
+ * exercises the same authorization path without needing a real token here.
+ */
 @WebMvcTest(BookingController.class)
+@Import({SecurityConfig.class, JwtAuthenticationEntryPoint.class})
+@WithMockUser
 class BookingControllerTest {
 
     private static final String VALID_REQUEST_JSON = """

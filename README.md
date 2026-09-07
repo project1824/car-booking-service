@@ -74,6 +74,7 @@ exception/      GlobalExceptionHandler + one exception per failure case
 | Credit card validation returned `REJECTED` (or any non-`APPROVED` status) | 422 |
 | credit-card-validation-service unreachable or returned an error | 502 |
 | Unrecognized `X-API-Version` (see API Versioning below) | 400 |
+| Missing/invalid/expired bearer token (see Authentication below) | 401 |
 | Anything unexpected | 500 |
 
 ### API Versioning
@@ -81,7 +82,7 @@ exception/      GlobalExceptionHandler + one exception per failure case
 Uses Spring Framework 7's native API versioning support (`WebMvcConfigurer.configureApiVersioning`), not a hand-rolled URL-prefix or header scheme. Clients specify a version via the `X-API-Version` header; the current (and only) version is `1.0`, which is also the configured default — so omitting the header entirely (as every existing client and test does) still resolves correctly. This is purely additive groundwork: a `2.0` handler can be added to `BookingController` later without breaking whatever is still calling the `1.0` contract.
 
 ```bash
-curl -X POST http://localhost:8082/booking -H "X-API-Version: 1.0" -H "Content-Type: application/json" -d '{...}'
+curl -X POST http://localhost:8082/booking -H "X-API-Version: 1.0" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{...}'
 ```
 
 An unrecognized version (e.g. `X-API-Version: 2.0`, which doesn't exist yet) returns a clean `400` with a clear message, rather than a generic `500` — handled by a dedicated `ResponseStatusException` mapping in `GlobalExceptionHandler`, since Spring's own `InvalidApiVersionException` already carries the correct status and just needs to not be swallowed by the catch-all handler.
@@ -103,6 +104,30 @@ The service consumes JSON messages shaped:
 ### Automatic cancellation
 
 A scheduled job (`BookingCancellationScheduler`, interval configurable) checks every `PENDING_PAYMENT` bank-transfer booking and cancels it once the current time reaches `rentalStartDate` (at midnight) minus the configured cancellation window (default 48h). Cancellation uses the same atomic-conditional-update mechanism as Kafka confirmation, so the two can never race into an inconsistent state (see Assumptions).
+
+## Authentication
+
+`POST /booking` requires a bearer JWT; `POST /auth/login` and everything under `/actuator/*` don't.
+
+**This is a self-issued JWT setup**: `car-booking-service` is both the issuer and the sole validator of its own tokens (HMAC-signed, `NimbusJwtEncoder`/`NimbusJwtDecoder` from Spring Security, no external library needed). There's no separate Identity Provider and no real user store — a single demo account (`app.security.demo-user.*`, defaults `demo`/`demo-password`) stands in for one, which is the honest scope for this assignment. This was a deliberate middle ground between two other options considered: a bare shared-secret API key (simpler, but doesn't demonstrate real JWT mechanics - signing, expiry, claims) and standing up a real external Identity Provider like Keycloak (closer to a genuine production setup, but disproportionate infrastructure for a take-home).
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8082/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"demo","password":"demo-password"}' | jq -r .token)
+
+curl -X POST http://localhost:8082/booking \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"customerName":"Jane Doe","vehicleId":"VEH12345","rentalStartDate":"2026-09-20","rentalEndDate":"2026-09-22","vehicleCategory":"SUV","paymentMode":"CASH"}'
+```
+
+**How this relates to a real multi-service production setup** (the honest gap between this and "real"): in a fleet of many services, only *one* place — a central Identity Provider (Keycloak, Auth0, Okta, Cognito) — actually authenticates users (password/MFA check, token issuance). Every other service that exposes an API is a "resource server": it doesn't authenticate anyone, it just validates an already-issued token's signature against the IdP's published public key (a JWKS endpoint) and trusts the claims inside — a few lines of standard config, not custom-built per service, and exactly the role `car-booking-service` plays here except it's *also* acting as its own tiny IdP for demo purposes. Swapping in a real external IdP later means replacing the `jwtEncoder`/`jwtDecoder`/`userDetailsService` beans in `SecurityConfig` with Boot's OAuth2-resource-server auto-configuration pointed at the IdP's `issuer-uri` — the rest of the security filter chain (`SecurityFilterChain`, `AuthController`) doesn't need to change.
+
+**Deliberate simplifications, stated plainly:**
+- `/actuator/**` is fully open, not just the liveness/readiness paths that Kubernetes' kubelet and Prometheus actually need unauthenticated (neither sends credentials). A stricter real deployment would move actuator to a separate management port instead of relaxing the same filter chain.
+- No refresh tokens, no fine-grained roles/permissions beyond "authenticated or not," no token revocation - a lost/stolen token stays valid until it naturally expires (`app.security.jwt.expiration-minutes`, default 60).
+- The JWT secret and demo password are dev-only defaults committed to `application.yaml` for local runs (`JWT_SECRET`/`DEMO_USER_PASSWORD` env vars override them) - `k8s/secret-example.yaml` shows how they'd be injected as real Kubernetes secrets instead, same pattern as the database password.
 
 ## Health Checks (`/actuator/*`)
 
@@ -181,6 +206,7 @@ The assignment states *"all details provided are sufficient; you may make additi
 14. **An additional Testcontainers-based Kafka integration test exists** (`BankTransferKafkaTestcontainersTest`), tagged and excluded from the default build so it doesn't add to the Docker dependency below beyond what's already required — it verifies the same scenario against a real Kafka broker instead of the embedded one.
 15. **The service uses PostgreSQL (via Testcontainers) for every `@SpringBootTest`, not H2.** This was a deliberate choice for full test/production parity over the alternative (H2 for speed, real Postgres only in production). The consequence, stated plainly: the *entire* test suite now requires Docker to run, not just the opt-in Testcontainers Kafka test — `mvn clean verify` will fail without Docker available. If building in a Docker-less environment, `mvn clean package -DskipTests` still compiles and packages the application; running the real test suite requires Docker to be running, same as `docker compose up` already does for the local Kafka/Postgres dev setup.
 16. **API versioning uses a header (`X-API-Version`), not a URL path prefix (`/v1/booking`).** Nothing in the assignment asks for versioning at all — this is added as a production-readiness demonstration. A header keeps the URL stable across versions and doesn't disturb the existing `/booking` path any of the 42 tests or the assignment's own examples reference; a path-based scheme would have meant renaming the endpoint everywhere for no functional benefit. The default version (`1.0`) means this is purely additive — no existing caller needs to change anything.
+17. **Authentication is a self-issued JWT, not a real external Identity Provider.** Nothing in the assignment asks for authentication either — added as a further production-readiness demonstration. Two alternatives were weighed and set aside: a bare API key (simpler, but doesn't demonstrate real JWT mechanics) and a real Keycloak-backed setup (closer to genuine production, but disproportionate infrastructure for a take-home). See the dedicated Authentication section above for the full reasoning and how this would evolve into a real multi-service setup.
 
 ## Running Locally
 
@@ -215,12 +241,13 @@ mvn clean verify
 ```
 **Requires Docker to be running** — every `@SpringBootTest` in this suite uses a real PostgreSQL instance via Testcontainers (see Assumptions #15). Covers:
 
-- **Unit** (no Spring context, no Docker): `BookingIdGeneratorTest`, `DigitalWalletPaymentStrategyTest`, `BankTransferPaymentStrategyTest`, `CreditCardPaymentStrategyTest`, `BookingServiceTest`, `BankTransferPaymentEventListenerTest`, `BookingCancellationSchedulerTest` (deterministic 48h-boundary testing via an injectable `Clock` — no real-time waiting needed)
-- **HTTP layer** (no Docker): `BookingControllerTest` (MockMvc, service mocked — success path, Bean Validation wiring, and every exception→status mapping through `GlobalExceptionHandler`)
+- **Unit** (no Spring context, no Docker): `BookingIdGeneratorTest`, `DigitalWalletPaymentStrategyTest`, `BankTransferPaymentStrategyTest`, `CreditCardPaymentStrategyTest`, `BookingServiceTest`, `BankTransferPaymentEventListenerTest`, `BookingCancellationSchedulerTest` (deterministic 48h-boundary testing via an injectable `Clock` — no real-time waiting needed), `JwtServiceTest` (token claims/expiry, rejects a token signed with a different key, rejects a tampered token)
+- **HTTP layer** (no Docker): `BookingControllerTest` (MockMvc against the real `SecurityConfig`, `@WithMockUser` standing in for a bearer token — success path, Bean Validation wiring, and every exception→status mapping through `GlobalExceptionHandler`), `AuthControllerTest` (real login flow against the real `AuthenticationManager`/`UserDetailsService` — correct credentials, wrong password, unknown user, blank username)
 - **External client** (no Docker): `CreditCardValidationClientImplTest` (OkHttp `MockWebServer` — verifies every response shape the OpenAPI spec documents)
 - **True end-to-end** (`@SpringBootTest`, `WebEnvironment.RANDOM_PORT`, real `TestRestTemplate` calls over a real embedded server, real PostgreSQL via Testcontainers — no mocks anywhere in the request path except the external credit-card service):
   - `BookingCreationIntegrationTest` — all four payment-mode outcomes via a real `POST /booking`, each verified against the real database row it produced, plus a full round trip where a booking created via the real endpoint is then confirmed by a real Kafka event
   - `BookingSchedulerIntegrationTest` — a booking created via the real endpoint, then auto-cancelled by the real `BookingCancellationScheduler` bean (time is fast-forwarded via an isolated, per-test controllable `Clock` rather than waiting real hours)
+  - `AuthenticationIntegrationTest` — proves `/booking` actually rejects a missing/garbage bearer token over real HTTP (not just that a directly-generated test token happens to work), plus a full real `/auth/login` → `/booking` round trip
 - **Kafka integration**: `BankTransferKafkaIntegrationTest` (`@EmbeddedKafka` — full Spring context, real JSON over an in-process broker, real PostgreSQL write)
 
 All `@SpringBootTest` classes share one PostgreSQL Testcontainer (via `AbstractPostgresIntegrationTest`, Testcontainers' singleton-container pattern) — started once per test run, not once per test class.
@@ -246,3 +273,6 @@ mvn test -Dtest=BankTransferKafkaTestcontainersTest -Dexcluded.test.groups=
 | `management.endpoint.health.group.readiness.include` | Indicators contributing to the readiness probe | `readinessState,db` (Kafka deliberately excluded — see Health Checks) |
 | `spring.jpa.hibernate.ddl-auto` | Schema management mode | `validate` — Flyway owns the schema, Hibernate only checks its mappings match (see Database Migrations) |
 | `spring.flyway.locations` | Where Flyway looks for migration scripts | `classpath:db/migration` (the default — set explicitly for documentation) |
+| `app.security.jwt.secret` | Base64 HMAC key signing/validating this service's own JWTs | dev-only default in `application.yaml` (env override: `JWT_SECRET`) — see Authentication |
+| `app.security.jwt.expiration-minutes` | How long an issued token stays valid | `60` (env override: `JWT_EXPIRATION_MINUTES`) |
+| `app.security.demo-user.username` / `.password` | The one demo account standing in for a real user store | `demo` / `demo-password` (env override: `DEMO_USER_USERNAME` / `DEMO_USER_PASSWORD`) |

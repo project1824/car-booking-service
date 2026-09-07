@@ -15,6 +15,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.resttestclient.TestRestTemplate;
 import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
@@ -77,6 +79,10 @@ class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
         registry.add("credit-card-validation-service.base-url", () -> creditCardMockServer.url("/").toString());
     }
 
+    private <T> ResponseEntity<T> postBooking(BookingRequest request, Class<T> responseType) {
+        return restTemplate.exchange("/booking", HttpMethod.POST, new HttpEntity<>(request, authHeaders()), responseType);
+    }
+
     @Test
     void cashBookingIsConfirmedAndPersistedInRealDatabase() {
         BookingRequest request = new BookingRequest(
@@ -84,7 +90,7 @@ class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
                 LocalDate.now().plusDays(5), LocalDate.now().plusDays(7),
                 VehicleCategory.SUV, PaymentMode.CASH, null);
 
-        ResponseEntity<BookingResponse> response = restTemplate.postForEntity("/booking", request, BookingResponse.class);
+        ResponseEntity<BookingResponse> response = postBooking(request, BookingResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(response.getBody()).isNotNull();
@@ -103,7 +109,7 @@ class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
                 LocalDate.now().plusDays(10), LocalDate.now().plusDays(12),
                 VehicleCategory.LUXURY, PaymentMode.BANK_TRANSFER, null);
 
-        ResponseEntity<BookingResponse> response = restTemplate.postForEntity("/booking", request, BookingResponse.class);
+        ResponseEntity<BookingResponse> response = postBooking(request, BookingResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(response.getBody()).isNotNull();
@@ -125,7 +131,7 @@ class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
                 LocalDate.now().plusDays(5), LocalDate.now().plusDays(6),
                 VehicleCategory.COMPACT, PaymentMode.CREDIT_CARD, "DL123456789");
 
-        ResponseEntity<BookingResponse> response = restTemplate.postForEntity("/booking", request, BookingResponse.class);
+        ResponseEntity<BookingResponse> response = postBooking(request, BookingResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(response.getBody()).isNotNull();
@@ -147,7 +153,7 @@ class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
                 LocalDate.now().plusDays(5), LocalDate.now().plusDays(6),
                 VehicleCategory.SEDAN, PaymentMode.CREDIT_CARD, "DL999999999");
 
-        ResponseEntity<ErrorResponse> response = restTemplate.postForEntity("/booking", request, ErrorResponse.class);
+        ResponseEntity<ErrorResponse> response = postBooking(request, ErrorResponse.class);
 
         assertThat(response.getStatusCode().value()).isEqualTo(422);
     }
@@ -159,7 +165,7 @@ class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
                 LocalDate.now().plusDays(10), LocalDate.now().plusDays(12),
                 VehicleCategory.SUV, PaymentMode.BANK_TRANSFER, null);
 
-        ResponseEntity<BookingResponse> createResponse = restTemplate.postForEntity("/booking", request, BookingResponse.class);
+        ResponseEntity<BookingResponse> createResponse = postBooking(request, BookingResponse.class);
 
         assertThat(createResponse.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(createResponse.getBody()).isNotNull();

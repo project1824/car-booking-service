@@ -36,6 +36,17 @@ app:
       cancellation:
         check-interval-ms: 300000
         window-hours: 48
+  security:
+    jwt:
+      # Dev-only default (Base64, 256-bit) - MUST be overridden via JWT_SECRET in any
+      # real deployment, exactly like the DB credentials below. Never commit a real one.
+      secret: ${JWT_SECRET:D6Z4AXKRdMVfQ7RYcURfwkthRJoiZaL6scjIZsg34A4=}
+      expiration-minutes: ${JWT_EXPIRATION_MINUTES:60}
+    demo-user:
+      # There's no real user store in scope for this assignment - one demo account
+      # stands in for it. See README Authentication section.
+      username: ${DEMO_USER_USERNAME:demo}
+      password: ${DEMO_USER_PASSWORD:demo-password}
 credit-card-validation-service:
   base-url: ${CREDIT_CARD_SERVICE_BASE_URL:http://localhost:9090/host/credit-card-payment-api}
 resilience4j:

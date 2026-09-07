@@ -5,6 +5,7 @@ import java.util.stream.Collectors;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -51,6 +52,18 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleConflict(RuntimeException ex) {
         log.warn("Rejected request due to conflict: {}", ex.getMessage());
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorResponse(ex.getMessage(), Instant.now()));
+    }
+
+    /**
+     * Thrown by AuthenticationManager.authenticate() in AuthController for an unknown
+     * username or wrong password. Never echo which one it was - that would let a caller
+     * enumerate valid usernames.
+     */
+    @ExceptionHandler(AuthenticationException.class)
+    public ResponseEntity<ErrorResponse> handleAuthenticationFailure(AuthenticationException ex) {
+        log.warn("Authentication failed: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .body(new ErrorResponse("Invalid username or password", Instant.now()));
     }
 
     /**

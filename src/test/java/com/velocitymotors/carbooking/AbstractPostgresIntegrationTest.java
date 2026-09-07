@@ -2,11 +2,15 @@ package com.velocitymotors.carbooking;
 
 import java.time.Duration;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
+
+import com.velocitymotors.carbooking.security.JwtService;
 
 /**
  * Shared base for any @SpringBootTest that needs a real database. Uses Testcontainers'
@@ -33,5 +37,20 @@ public abstract class AbstractPostgresIntegrationTest {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
+    }
+
+    @Autowired
+    private JwtService jwtService;
+
+    /**
+     * A valid bearer token for tests that exercise the real HTTP layer. The resource
+     * server only checks the JWT's signature and expiry, not that the subject matches a
+     * real user - so any subject works here, no need to go through /auth/login first
+     * for tests whose actual focus is booking/scheduling behavior, not auth itself.
+     */
+    protected HttpHeaders authHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(jwtService.generateToken("test-user"));
+        return headers;
     }
 }
