@@ -2,6 +2,13 @@
 
 A Spring Boot microservice for **Velocity Motors** that manages car rental bookings, built as part of a take-home assignment. It confirms bookings based on payment method (digital wallet/cash, credit card, or bank transfer), integrates with an external credit-card validation service, consumes bank-transfer payment events from Kafka, and automatically cancels unpaid bank-transfer bookings 48 hours before rental start.
 
+> **Known gaps - things I still need to improve.** This project goes beyond what the assignment actually asked for in a lot of places, Here's what I know is missing or not done the right way, i want to addess this upfront.:
+> 1. **No TLS/HTTPS anywhere.** Every request — including customer name and payment reference — goes over plain HTTP, both locally and in the Docker/Kubernetes setup. In a real deployment this would be handled at the ingress or by a service mesh, but this project doesn't do it at all right now.
+> 2. **No authentication on this branch.** Right now anyone can call `/booking`, no login needed. I did build a JWT-based login on a separate branch (`feature/jwt-authentication`), but kept it out of this branch on purpose so the API stays easy to test/grade without needing a token first.
+> 3. **Booking ID generation isn't safe with more than one pod running.** Each pod keeps its own counter in memory, starting from `repository.count()` when it boots. If two pods start around the same time and both get requests, they can end up generating the same booking ID — and the second insert fails since the ID is a primary key. This needs a real DB sequence or a shared ID generator, not a counter sitting inside each pod.
+> 4. **Distributed tracing was attempted and abandoned.** A real OpenTelemetry + Tempo/Grafana integration was built and live-verified, then reverted after real friction (an OkHttp version conflict from the OTLP exporter, a Tempo bind-address misconfiguration, a missing Spring Boot `WebClient` auto-configuration module). Only correlation-ID log stitching and Micrometer metrics exist today — no real cross-service trace visibility, needed more time to investigate it.
+> 5. **The credit-card-validation-service spec is just read, not actually used in code.** The assignment says to integrate and use the OpenAPI file directly, but we only used it as a reference and wrote the client by hand. Tried generating it with openapi-generator twice (webclient and feign options), both failed because they generate old Jackson 2 code and this project runs on Jackson 3. So we hand-wrote the client to match the spec, and tests cover every response case it documents.Again needed some extra time to investigate this compatibility issue.
+
 ## Tech Stack
 
 - **Java 21**, **Spring Boot 4.1.1** (Spring Framework 7 / Jackson 3)
@@ -35,6 +42,115 @@ exception/      GlobalExceptionHandler + one exception per failure case
 ```
 
 **Payment-mode branching uses the Strategy pattern** (`payment/PaymentStrategy` + `DigitalWalletPaymentStrategy`, `CreditCardPaymentStrategy`, `BankTransferPaymentStrategy`), rather than an if/else chain in the service. `BookingService` resolves the correct strategy from a `Map<PaymentMode, PaymentStrategy>` built automatically from every `PaymentStrategy` bean Spring discovers — adding a new payment mode later means adding one class, not editing existing logic (open/closed principle).
+
+## Sequence Diagrams
+
+### Booking creation (`POST /booking`)
+
+```mermaid
+sequenceDiagram
+    actor Client
+    participant Controller as BookingController
+    participant Service as BookingService
+    participant DB as BookingRepository (Postgres)
+    participant CCStrategy as CreditCardPaymentStrategy
+    participant CCClient as CreditCardValidationClient
+    participant External as credit-card-validation-service
+
+    Client->>Controller: POST /booking
+    Controller->>Service: createBooking(request)
+    Service->>Service: validate rental period & payment reference
+    Service->>DB: lockVehicle(vehicleId) [pg_advisory_xact_lock]
+    Service->>DB: existsOverlappingActiveBooking(...)
+    alt vehicle already booked for these dates
+        DB-->>Service: true
+        Service-->>Controller: throw VehicleUnavailableException
+        Controller-->>Client: 409 Conflict
+    end
+    Service->>Service: idGenerator.generate() -> bookingId
+
+    alt paymentMode = CASH or DIGITAL_WALLET
+        Service->>Service: DigitalWalletPaymentStrategy.process()
+        Note right of Service: Confirmed immediately, no external call
+    else paymentMode = CREDIT_CARD
+        Service->>DB: lockPaymentReference(ref) [pg_advisory_xact_lock]
+        Service->>DB: existsByPaymentReferenceAndStatus(ref, CONFIRMED)
+        alt reference already used by a confirmed booking
+            DB-->>Service: true
+            Service-->>Controller: throw PaymentReferenceAlreadyUsedException
+            Controller-->>Client: 409 Conflict
+        end
+        Service->>CCStrategy: process(request, bookingId)
+        CCStrategy->>CCClient: checkStatus(paymentReference)
+        Note over CCClient: Resilience4j Retry (max 3, 300ms)<br/>wraps a Circuit Breaker
+        CCClient->>External: POST /payment-status
+        alt upstream reachable
+            External-->>CCClient: 200 {status: APPROVED|REJECTED}
+            CCClient-->>CCStrategy: PaymentStatusResponse
+            alt APPROVED
+                CCStrategy-->>Service: PaymentResult(CONFIRMED)
+            else REJECTED
+                CCStrategy-->>Controller: throw PaymentDeclinedException
+                Controller-->>Client: 422 Unprocessable Content
+            end
+        else unreachable, 5xx, or circuit open
+            External--xCCClient: connection error / timeout
+            CCClient-->>Controller: throw CreditCardServiceUnavailableException
+            Controller-->>Client: 502 Bad Gateway
+        end
+    else paymentMode = BANK_TRANSFER
+        alt rental start already inside the 48h cancellation window
+            Service-->>Controller: throw BankTransferWindowExpiredException
+            Controller-->>Client: 400 Bad Request
+        else
+            Service->>Service: BankTransferPaymentStrategy.process()
+            Note right of Service: Status = PENDING_PAYMENT<br/>confirmed later via Kafka (see below)
+        end
+    end
+
+    Service->>DB: save(booking)
+    Service-->>Controller: BookingResponse(bookingId, status)
+    Controller-->>Client: 201 Created
+```
+
+### Async bank-transfer confirmation & auto-cancellation
+
+```mermaid
+sequenceDiagram
+    participant Bank as External Bank System
+    participant Kafka as Kafka topic<br/>bank-transfer-payment-events
+    participant Listener as BankTransferPaymentEventListener
+    participant DB as BookingRepository (Postgres)
+    participant Scheduler as BookingCancellationScheduler
+
+    Bank->>Kafka: publish payment event<br/>{transactionDetails: "...BKG0012345"}
+    Kafka->>Listener: onBankTransferPaymentEvent(message)
+    Listener->>Listener: parse JSON, extract trailing 10 chars as bookingId
+    alt message malformed or unparseable
+        Listener->>Listener: log WARN, metric outcome=malformed/unparseable
+    else valid
+        Listener->>DB: confirmIfPending(bookingId, now)<br/>UPDATE ... WHERE status = PENDING_PAYMENT
+        alt booking found and still pending
+            DB-->>Listener: 1 row updated
+            Listener->>Listener: log INFO, metric outcome=confirmed
+        else already resolved or unknown id
+            DB-->>Listener: 0 rows updated
+            Listener->>Listener: log WARN, metric outcome=no_matching_booking
+        end
+    end
+
+    Note over Scheduler: Runs every check-interval-ms (default 5 min)
+    loop each scheduled run
+        Scheduler->>DB: findByPaymentModeAndStatus(BANK_TRANSFER, PENDING_PAYMENT)
+        DB-->>Scheduler: candidate bookings
+        loop each candidate
+            alt now >= rentalStartDate - window-hours (default 48h)
+                Scheduler->>DB: cancelIfPending(bookingId, now)<br/>UPDATE ... WHERE status = PENDING_PAYMENT
+                Note right of DB: Same atomic conditional update as the<br/>Kafka listener - the two can never race<br/>into an inconsistent state
+            end
+        end
+    end
+```
 
 ## API
 
@@ -99,6 +215,8 @@ The service consumes JSON messages shaped:
 {"paymentId":"PAY001","senderAccountNumber":"ACC123456","paymentAmount":500.00,"transactionDetails":"TXN987654321 BKG0012345"}
 ```
 `transactionDetails` packs a 12-character transaction reference and a 10-character Booking ID together. The listener extracts the **trailing 10 characters** of the (trimmed) string as the Booking ID — robust to extra whitespace between the two fields — and atomically confirms that booking if (and only if) it's still `PENDING_PAYMENT`. Unknown/already-resolved booking IDs are logged and skipped, not treated as errors (this also handles duplicate/replayed messages safely).
+
+**Error handling & dead-lettering.** The listener container factory (`KafkaConsumerConfig`) wraps every message in a `DefaultErrorHandler` backed by a `DeadLetterPublishingRecoverer`: if the listener throws, the message is retried up to 3 times (1s apart) before being republished to `bank-transfer-payment-events-dlt` (Spring Kafka's default `<topic>-dlt` naming) so one bad message can't wedge the partition. That said, two failure modes are **not** transient — unparseable JSON and a `transactionDetails` too short to carry a booking ID — retrying the same malformed message 3 times would fail identically every time. Both now throw `MalformedBankTransferEventException`, which is registered via `errorHandler.addNotRetryableExceptions(...)` so it skips the retry backoff entirely and lands on the dead-letter topic immediately, verified in `BankTransferKafkaIntegrationTest` (the message arrives on `-dlt` in well under the 3 seconds a retried failure would take). Earlier this exception type didn't exist — both cases were just logged and silently dropped, with no way to recover or replay a bad message once the log line scrolled away.
 
 ### Automatic cancellation
 

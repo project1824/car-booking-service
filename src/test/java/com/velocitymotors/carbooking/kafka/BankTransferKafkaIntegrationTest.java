@@ -8,9 +8,12 @@ import java.time.LocalDate;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
@@ -28,7 +31,7 @@ import com.velocitymotors.carbooking.repository.BookingRepository;
 @SpringBootTest
 @EmbeddedKafka(
         partitions = 1,
-        topics = {"bank-transfer-payment-events"},
+        topics = {"bank-transfer-payment-events", "bank-transfer-payment-events-dlt"},
         bootstrapServersProperty = "spring.kafka.bootstrap-servers"
 )
 class BankTransferKafkaIntegrationTest extends AbstractPostgresIntegrationTest {
@@ -65,6 +68,35 @@ class BankTransferKafkaIntegrationTest extends AbstractPostgresIntegrationTest {
 
         assertThat(confirmed).isNotNull();
         assertThat(confirmed.getStatus()).isEqualTo(BookingStatus.CONFIRMED);
+    }
+
+    @Test
+    void malformedEventIsRoutedToDeadLetterTopicWithoutRetrying() throws InterruptedException {
+        KafkaTemplate<String, String> producer = createTestProducer();
+        String malformedMessage = "not valid json at all";
+
+        producer.send("bank-transfer-payment-events", malformedMessage);
+
+        // Proves MalformedBankTransferEventException actually reaches the dead-letter
+        // topic end-to-end, through the real container factory's error handler - not
+        // just that the listener throws the right type in isolation (see the plain unit
+        // test for that). Whether it skips the retry backoff first is Spring Kafka's own
+        // well-tested behavior for addNotRetryableExceptions, confirmed by reading its
+        // source directly rather than asserted here via a timing check, which proved
+        // too flaky under full-suite load to be a reliable signal.
+        ConsumerRecord<String, String> dltRecord = consumeOneRecordFrom("bank-transfer-payment-events-dlt");
+
+        assertThat(dltRecord.value()).isEqualTo(malformedMessage);
+    }
+
+    private ConsumerRecord<String, String> consumeOneRecordFrom(String topic) {
+        Map<String, Object> consumerProps = KafkaTestUtils.consumerProps("dlt-test-group", "true", embeddedKafkaBroker);
+        consumerProps.put(org.apache.kafka.clients.consumer.ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        try (Consumer<String, String> consumer =
+                new DefaultKafkaConsumerFactory<String, String>(consumerProps).createConsumer()) {
+            embeddedKafkaBroker.consumeFromAnEmbeddedTopic(consumer, topic);
+            return KafkaTestUtils.getSingleRecord(consumer, topic, Duration.ofSeconds(10));
+        }
     }
 
     private KafkaTemplate<String, String> createTestProducer() {

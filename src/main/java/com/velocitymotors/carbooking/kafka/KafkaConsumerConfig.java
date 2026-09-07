@@ -45,6 +45,11 @@ public class KafkaConsumerConfig {
         errorHandler.setRetryListeners((record, ex, deliveryAttempt) ->
                 log.warn("Retry {} processing message at topic={}, partition={}, offset={}: {}",
                         deliveryAttempt, record.topic(), record.partition(), record.offset(), ex.getMessage()));
+        // A malformed message (bad JSON, too-short transactionDetails) can never succeed no
+        // matter how many times it's retried - skip the 3 retries entirely and go straight
+        // to the dead-letter topic instead of wasting 3 seconds retrying an outcome that
+        // can't change.
+        errorHandler.addNotRetryableExceptions(MalformedBankTransferEventException.class);
         factory.setCommonErrorHandler(errorHandler);
 
         return factory;

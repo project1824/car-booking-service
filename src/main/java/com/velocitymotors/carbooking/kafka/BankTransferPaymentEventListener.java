@@ -42,9 +42,9 @@ public class BankTransferPaymentEventListener {
         try {
             event = objectMapper.readValue(message, BankTransferPaymentEvent.class);
         } catch (JacksonException ex) {
-            log.warn("Ignoring unparseable bank-transfer-payment-event: {}", message, ex);
+            log.warn("Unparseable bank-transfer-payment-event, routing to dead-letter topic: {}", message, ex);
             meterRegistry.counter("bank_transfer_events_total", "outcome", "unparseable").increment();
-            return;
+            throw new MalformedBankTransferEventException("Unparseable bank-transfer-payment-event", ex);
         }
         log.debug("Parsed bank-transfer-payment-event paymentId={}", event.paymentId());
 
@@ -52,9 +52,10 @@ public class BankTransferPaymentEventListener {
         String trimmed = details == null ? "" : details.strip();
 
         if (trimmed.length() < MIN_TRANSACTION_DETAILS_LENGTH) {
-            log.warn("Ignoring malformed bank-transfer-payment-event, transactionDetails='{}'", details);
+            log.warn("Malformed bank-transfer-payment-event, routing to dead-letter topic, transactionDetails='{}'", details);
             meterRegistry.counter("bank_transfer_events_total", "outcome", "malformed").increment();
-            return;
+            throw new MalformedBankTransferEventException(
+                    "transactionDetails too short to carry a booking id: '" + details + "'");
         }
 
         String bookingId = trimmed.substring(trimmed.length() - BOOKING_ID_LENGTH);

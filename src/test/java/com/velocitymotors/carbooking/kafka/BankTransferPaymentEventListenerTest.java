@@ -1,6 +1,7 @@
 package com.velocitymotors.carbooking.kafka;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -68,8 +69,9 @@ class BankTransferPaymentEventListenerTest {
     }
 
     @Test
-    void ignoresUnparseableJsonWithoutCallingRepository() {
-        listener.onBankTransferPaymentEvent("not valid json at all");
+    void throwsForUnparseableJsonWithoutCallingRepository() {
+        assertThatThrownBy(() -> listener.onBankTransferPaymentEvent("not valid json at all"))
+                .isInstanceOf(MalformedBankTransferEventException.class);
 
         verify(repository, never()).confirmIfPending(anyString(), any(Instant.class));
         assertThat(meterRegistry.get("bank_transfer_events_total").tag("outcome", "unparseable").counter().count())
@@ -77,12 +79,13 @@ class BankTransferPaymentEventListenerTest {
     }
 
     @Test
-    void ignoresMessageWithTooShortTransactionDetails() {
+    void throwsForMessageWithTooShortTransactionDetails() {
         String message = """
                 {"paymentId":"PAY003","senderAccountNumber":"ACC123456","paymentAmount":500.00,"transactionDetails":"TOO SHORT"}
                 """;
 
-        listener.onBankTransferPaymentEvent(message);
+        assertThatThrownBy(() -> listener.onBankTransferPaymentEvent(message))
+                .isInstanceOf(MalformedBankTransferEventException.class);
 
         verify(repository, never()).confirmIfPending(anyString(), any(Instant.class));
         assertThat(meterRegistry.get("bank_transfer_events_total").tag("outcome", "malformed").counter().count())
