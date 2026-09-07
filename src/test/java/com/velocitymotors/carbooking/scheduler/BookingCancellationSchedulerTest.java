@@ -1,5 +1,6 @@
 package com.velocitymotors.carbooking.scheduler;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -22,6 +23,8 @@ import com.velocitymotors.carbooking.enums.BookingStatus;
 import com.velocitymotors.carbooking.enums.PaymentMode;
 import com.velocitymotors.carbooking.repository.BookingRepository;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 @ExtendWith(MockitoExtension.class)
 class BookingCancellationSchedulerTest {
 
@@ -30,11 +33,14 @@ class BookingCancellationSchedulerTest {
     @Mock
     private BookingRepository repository;
 
+    private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+
     @Test
     void cancelsBookingWhenDeadlineHasPassed() {
         // now = 2026-09-10T10:00:00Z; booking starts tomorrow -> deadline already passed
         Clock clock = Clock.fixed(Instant.parse("2026-09-10T10:00:00Z"), ZoneOffset.UTC);
-        BookingCancellationScheduler scheduler = new BookingCancellationScheduler(repository, clock, WINDOW_HOURS);
+        BookingCancellationScheduler scheduler =
+                new BookingCancellationScheduler(repository, clock, WINDOW_HOURS, meterRegistry);
 
         Booking expiredBooking = pendingBankTransferBooking("BKG0000001", LocalDate.of(2026, 9, 11));
         when(repository.findByPaymentModeAndStatus(PaymentMode.BANK_TRANSFER, BookingStatus.PENDING_PAYMENT))
@@ -44,13 +50,15 @@ class BookingCancellationSchedulerTest {
         scheduler.cancelExpiredBankTransferBookings();
 
         verify(repository).cancelIfPending(eq("BKG0000001"), any(Instant.class));
+        assertThat(meterRegistry.get("bookings_autocancelled_total").counter().count()).isEqualTo(1.0);
     }
 
     @Test
     void doesNotCancelBookingWellWithinTheWindow() {
         // now = 2026-09-10T10:00:00Z; booking starts in 10 days -> deadline far in the future
         Clock clock = Clock.fixed(Instant.parse("2026-09-10T10:00:00Z"), ZoneOffset.UTC);
-        BookingCancellationScheduler scheduler = new BookingCancellationScheduler(repository, clock, WINDOW_HOURS);
+        BookingCancellationScheduler scheduler =
+                new BookingCancellationScheduler(repository, clock, WINDOW_HOURS, meterRegistry);
 
         Booking safeBooking = pendingBankTransferBooking("BKG0000002", LocalDate.of(2026, 9, 20));
         when(repository.findByPaymentModeAndStatus(PaymentMode.BANK_TRANSFER, BookingStatus.PENDING_PAYMENT))
@@ -68,7 +76,8 @@ class BookingCancellationSchedulerTest {
         // The conditional update returning 0 rows is the mechanism that prevents the race
         // from corrupting the booking's status.
         Clock clock = Clock.fixed(Instant.parse("2026-09-10T10:00:00Z"), ZoneOffset.UTC);
-        BookingCancellationScheduler scheduler = new BookingCancellationScheduler(repository, clock, WINDOW_HOURS);
+        BookingCancellationScheduler scheduler =
+                new BookingCancellationScheduler(repository, clock, WINDOW_HOURS, meterRegistry);
 
         Booking racedBooking = pendingBankTransferBooking("BKG0000003", LocalDate.of(2026, 9, 11));
         when(repository.findByPaymentModeAndStatus(PaymentMode.BANK_TRANSFER, BookingStatus.PENDING_PAYMENT))

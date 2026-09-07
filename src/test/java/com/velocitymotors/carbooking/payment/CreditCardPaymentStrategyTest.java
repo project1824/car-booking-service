@@ -20,17 +20,21 @@ import com.velocitymotors.carbooking.enums.PaymentMode;
 import com.velocitymotors.carbooking.enums.VehicleCategory;
 import com.velocitymotors.carbooking.exception.PaymentDeclinedException;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 @ExtendWith(MockitoExtension.class)
 class CreditCardPaymentStrategyTest {
 
     @Mock
     private CreditCardValidationClient client;
 
+    private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+
     private CreditCardPaymentStrategy strategy;
 
     @BeforeEach
     void setUp() {
-        strategy = new CreditCardPaymentStrategy(client);
+        strategy = new CreditCardPaymentStrategy(client, meterRegistry);
     }
 
     @Test
@@ -41,6 +45,8 @@ class CreditCardPaymentStrategyTest {
         PaymentResult result = strategy.process(bookingRequest("DL123456789"), "BKG0000001");
 
         assertThat(result.status()).isEqualTo(BookingStatus.CONFIRMED);
+        assertThat(meterRegistry.get("credit_card_payment_result_total").tag("result", "approved").counter().count())
+                .isEqualTo(1.0);
     }
 
     @Test
@@ -50,6 +56,9 @@ class CreditCardPaymentStrategyTest {
 
         assertThatThrownBy(() -> strategy.process(bookingRequest("DL999999999"), "BKG0000001"))
                 .isInstanceOf(PaymentDeclinedException.class);
+
+        assertThat(meterRegistry.get("credit_card_payment_result_total").tag("result", "declined").counter().count())
+                .isEqualTo(1.0);
     }
 
     private BookingRequest bookingRequest(String paymentReference) {

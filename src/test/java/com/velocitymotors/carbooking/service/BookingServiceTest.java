@@ -36,6 +36,8 @@ import com.velocitymotors.carbooking.payment.PaymentResult;
 import com.velocitymotors.carbooking.payment.PaymentStrategy;
 import com.velocitymotors.carbooking.repository.BookingRepository;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 @ExtendWith(MockitoExtension.class)
 class BookingServiceTest {
 
@@ -51,13 +53,15 @@ class BookingServiceTest {
     @Mock
     private PaymentStrategy strategy;
 
+    private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+
     private BookingService bookingService;
 
     @BeforeEach
     void setUp() {
         when(strategy.supportedModes())
                 .thenReturn(Set.of(PaymentMode.CASH, PaymentMode.CREDIT_CARD, PaymentMode.BANK_TRANSFER));
-        bookingService = new BookingService(repository, idGenerator, vehicleValidationService, List.of(strategy));
+        bookingService = new BookingService(repository, idGenerator, vehicleValidationService, List.of(strategy), meterRegistry);
     }
 
     @Test
@@ -81,6 +85,11 @@ class BookingServiceTest {
         assertThat(saved.getStatus()).isEqualTo(BookingStatus.CONFIRMED);
         assertThat(saved.getCustomerName()).isEqualTo("Test Customer");
         assertThat(saved.getPaymentMode()).isEqualTo(PaymentMode.CASH);
+
+        assertThat(meterRegistry.get("bookings_total")
+                .tag("paymentMode", "CASH")
+                .tag("status", "CONFIRMED")
+                .counter().count()).isEqualTo(1.0);
     }
 
     @Test
@@ -139,7 +148,7 @@ class BookingServiceTest {
         PaymentStrategy limitedStrategy = mock(PaymentStrategy.class);
         when(limitedStrategy.supportedModes()).thenReturn(Set.of(PaymentMode.CASH));
         BookingService limitedService =
-                new BookingService(repository, idGenerator, vehicleValidationService, List.of(limitedStrategy));
+                new BookingService(repository, idGenerator, vehicleValidationService, List.of(limitedStrategy), meterRegistry);
 
         when(idGenerator.generate()).thenReturn("BKG0000001");
         BookingRequest request = bookingRequest(PaymentMode.CREDIT_CARD, "DL123456789");

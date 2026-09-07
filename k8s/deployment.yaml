@@ -15,13 +15,17 @@ spec:
     metadata:
       labels:
         app: car-booking-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8082"
+        prometheus.io/path: "/actuator/prometheus"
     spec:
       containers:
         - name: car-booking-service
           image: car-booking-service:latest
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 8081
+            - containerPort: 8082
           env:
             # Replace with the real Kafka broker/service address in the cluster
             # (e.g. a Strimzi-managed bootstrap service). "localhost" only makes
@@ -49,14 +53,14 @@ spec:
           livenessProbe:
             httpGet:
               path: /actuator/health/liveness
-              port: 8081
+              port: 8082
             initialDelaySeconds: 20
             periodSeconds: 15
             failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /actuator/health/readiness
-              port: 8081
+              port: 8082
             initialDelaySeconds: 10
             periodSeconds: 10
             failureThreshold: 3

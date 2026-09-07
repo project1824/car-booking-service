@@ -9,6 +9,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import com.velocitymotors.carbooking.dto.ErrorResponse;
 
@@ -54,14 +55,17 @@ public class GlobalExceptionHandler {
 
     /**
      * Catches any Spring-internal exception that already carries its own correct HTTP
-     * status (e.g. InvalidApiVersionException for an unrecognized X-API-Version) so it
-     * isn't swallowed into the generic 500 below - respects whatever status/reason
-     * Spring itself attached rather than guessing.
+     * status (e.g. InvalidApiVersionException for an unrecognized X-API-Version, or
+     * NoResourceFoundException for a stray request like /favicon.ico) so it isn't
+     * swallowed into the generic 500 below. ResponseStatusException and
+     * NoResourceFoundException don't share a common Throwable superclass - they're
+     * siblings that both implement Spring's ErrorResponse interface - so the handler
+     * targets that interface directly instead of chasing each concrete type as it's found.
      */
-    @ExceptionHandler(ResponseStatusException.class)
-    public ResponseEntity<ErrorResponse> handleResponseStatusException(ResponseStatusException ex) {
-        log.warn("Rejected request: {}", ex.getReason());
-        String message = ex.getReason() != null ? ex.getReason() : ex.getMessage();
+    @ExceptionHandler({ResponseStatusException.class, NoResourceFoundException.class})
+    public ResponseEntity<ErrorResponse> handleSpringErrorResponse(org.springframework.web.ErrorResponse ex) {
+        String message = ex.getBody().getDetail() != null ? ex.getBody().getDetail() : ex.getBody().getTitle();
+        log.warn("Rejected request: {}", message);
         return ResponseEntity.status(ex.getStatusCode()).body(new ErrorResponse(message, Instant.now()));
     }
 

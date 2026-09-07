@@ -13,20 +13,37 @@ import org.springframework.web.reactive.function.client.WebClient;
 import com.velocitymotors.carbooking.client.dto.PaymentStatusResponse;
 import com.velocitymotors.carbooking.exception.CreditCardServiceUnavailableException;
 
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.retry.RetryConfig;
+import io.github.resilience4j.retry.RetryRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
 
+/**
+ * Exercises the raw request/response mapping only - retry and circuit-breaker are
+ * disabled here (maxAttempts=1, a circuit breaker that never has enough calls to open)
+ * so each scenario makes exactly one HTTP call, same as before those were added. Their
+ * actual behavior (retrying transient failures, opening after repeated failures) is
+ * covered separately in {@link CreditCardValidationClientResilienceTest}.
+ */
 class CreditCardValidationClientImplTest {
 
     private MockWebServer server;
     private CreditCardValidationClientImpl client;
+    private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+    private final RetryRegistry retryRegistry = RetryRegistry.of(RetryConfig.custom().maxAttempts(1).build());
+    private final CircuitBreakerRegistry circuitBreakerRegistry = CircuitBreakerRegistry.of(
+            CircuitBreakerConfig.custom().slidingWindowSize(100).minimumNumberOfCalls(100).build());
 
     @BeforeEach
     void setUp() throws IOException {
         server = new MockWebServer();
         server.start();
-        client = new CreditCardValidationClientImpl(WebClient.builder(), server.url("/").toString());
+        client = new CreditCardValidationClientImpl(
+                WebClient.builder(), server.url("/").toString(), meterRegistry, retryRegistry, circuitBreakerRegistry);
     }
 
     @AfterEach
@@ -96,8 +113,8 @@ class CreditCardValidationClientImplTest {
         String deadUrl = deadServer.url("/").toString();
         deadServer.shutdown();
 
-        CreditCardValidationClientImpl unreachableClient =
-                new CreditCardValidationClientImpl(WebClient.builder(), deadUrl);
+        CreditCardValidationClientImpl unreachableClient = new CreditCardValidationClientImpl(
+                WebClient.builder(), deadUrl, meterRegistry, retryRegistry, circuitBreakerRegistry);
 
         assertThatThrownBy(() -> unreachableClient.checkStatus("DL123456789"))
                 .isInstanceOf(CreditCardServiceUnavailableException.class);

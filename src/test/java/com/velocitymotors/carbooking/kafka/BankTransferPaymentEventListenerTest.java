@@ -1,5 +1,6 @@
 package com.velocitymotors.carbooking.kafka;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -17,6 +18,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.velocitymotors.carbooking.repository.BookingRepository;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import tools.jackson.databind.ObjectMapper;
 
 @ExtendWith(MockitoExtension.class)
@@ -25,12 +27,14 @@ class BankTransferPaymentEventListenerTest {
     @Mock
     private BookingRepository repository;
 
+    private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+
     private BankTransferPaymentEventListener listener;
 
     @BeforeEach
     void setUp() {
         ObjectMapper objectMapper = new ObjectMapper();
-        listener = new BankTransferPaymentEventListener(repository, objectMapper);
+        listener = new BankTransferPaymentEventListener(repository, objectMapper, meterRegistry);
     }
 
     @Test
@@ -44,6 +48,8 @@ class BankTransferPaymentEventListenerTest {
         listener.onBankTransferPaymentEvent(message);
 
         verify(repository).confirmIfPending(eq("BKG0012345"), any(Instant.class));
+        assertThat(meterRegistry.get("bank_transfer_events_total").tag("outcome", "confirmed").counter().count())
+                .isEqualTo(1.0);
     }
 
     @Test
@@ -57,6 +63,8 @@ class BankTransferPaymentEventListenerTest {
         listener.onBankTransferPaymentEvent(message);
 
         verify(repository).confirmIfPending(eq("BKG0000999"), any(Instant.class));
+        assertThat(meterRegistry.get("bank_transfer_events_total").tag("outcome", "no_matching_booking").counter().count())
+                .isEqualTo(1.0);
     }
 
     @Test
@@ -64,6 +72,8 @@ class BankTransferPaymentEventListenerTest {
         listener.onBankTransferPaymentEvent("not valid json at all");
 
         verify(repository, never()).confirmIfPending(anyString(), any(Instant.class));
+        assertThat(meterRegistry.get("bank_transfer_events_total").tag("outcome", "unparseable").counter().count())
+                .isEqualTo(1.0);
     }
 
     @Test
@@ -75,6 +85,8 @@ class BankTransferPaymentEventListenerTest {
         listener.onBankTransferPaymentEvent(message);
 
         verify(repository, never()).confirmIfPending(anyString(), any(Instant.class));
+        assertThat(meterRegistry.get("bank_transfer_events_total").tag("outcome", "malformed").counter().count())
+                .isEqualTo(1.0);
     }
 
     @Test

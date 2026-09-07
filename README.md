@@ -110,6 +110,35 @@ A scheduled job (`BookingCancellationScheduler`, interval configurable) checks e
 - `GET /actuator/health/liveness` — **process-health only**, no external dependency checks. Wired to a Kubernetes `livenessProbe`. Kept deliberately minimal: liveness failures cause Kubernetes to *restart* the pod, and restarting a healthy process won't fix a downed database or broker — mixing dependency checks into liveness just causes pointless restart churn during an outage.
 - `GET /actuator/health/readiness` — includes the app's own readiness state **plus the database check**, but *not* Kafka. Readiness failures pull the pod out of the Service's load-balancer rotation. A downed database means the app genuinely can't serve any request, so that should fail readiness. A downed Kafka broker only affects the asynchronous bank-transfer confirmation path — `POST /booking` for `CASH`/`DIGITAL_WALLET`/`CREDIT_CARD` still works fine — so it deliberately isn't wired into readiness, to avoid taking a still-mostly-functional pod out of rotation.
 
+## Observability (Prometheus)
+
+- `GET /actuator/prometheus` — Prometheus-format scrape endpoint (`management.endpoints.web.exposure.include` includes `prometheus`). Exposes Micrometer's usual auto-instrumented metrics (JVM memory/GC/threads, `http_server_requests` with percentile histograms enabled, HikariCP connection-pool stats, Kafka consumer/producer client metrics, disk space, etc.) plus five custom business counters registered via an injected `MeterRegistry`:
+
+  | Metric | Tags | Incremented when |
+  |---|---|---|
+  | `bookings_total` | `paymentMode`, `status` | Every booking is persisted (`BookingService`) |
+  | `bookings_autocancelled_total` | — | The 48h scheduler cancels a `PENDING_PAYMENT` bank-transfer booking |
+  | `credit_card_validation_calls_total` | `outcome` (`success`/`error`) | Every call to the external credit-card-validation-service, regardless of APPROVED/REJECTED |
+  | `credit_card_payment_result_total` | `result` (`approved`/`declined`) | A credit-card validation response is interpreted into a booking outcome |
+  | `bank_transfer_events_total` | `outcome` (`confirmed`/`no_matching_booking`/`malformed`/`unparseable`) | Every Kafka `bank-transfer-payment-events` message is processed |
+
+  Every metric also carries an `application=car-booking-service` tag (`management.metrics.tags.application`), so multiple services can share one Prometheus/Grafana instance without name collisions.
+
+- **Naming gotcha found during verification, not assumed:** the business counter for booking creation was originally named `bookings_created_total`. Live-checking `/actuator/prometheus` showed it was actually exported as `bookings_total` — Prometheus/OpenMetrics treats a trailing `_created` as a reserved suffix (used for a counter's creation-timestamp series), so Micrometer's Prometheus naming convention silently strips it before re-appending `_total`. Renamed the metric to `bookings_total` directly so the code, the tests, and the actual scraped output all agree — a name that only *looks* right in a `SimpleMeterRegistry`-based unit test can still be silently rewritten by the real Prometheus registry.
+- In Kubernetes, the pod template in [`k8s/deployment.yaml`](k8s/deployment.yaml) carries `prometheus.io/scrape`, `prometheus.io/port`, and `prometheus.io/path` annotations for annotation-based Prometheus service discovery.
+
+## Resilience (Retry & Circuit Breaker)
+
+The only synchronous external HTTP dependency in the booking path is the credit-card-validation-service call in [`CreditCardValidationClientImpl`](src/main/java/com/velocitymotors/carbooking/client/CreditCardValidationClientImpl.java). It's wrapped with Resilience4j (`resilience4j-spring-boot4`), configured under `resilience4j.retry.instances.creditCardValidation` / `resilience4j.circuitbreaker.instances.creditCardValidation` in `application.yaml`:
+
+- **Retry** (max 3 attempts, 300ms wait) - kept deliberately small. For `CREDIT_CARD` bookings this call happens *inside* an open DB transaction while holding the vehicle/payment-reference advisory lock (see decision below), so every retry attempt directly extends how long that lock is held - a generous retry policy would turn a slow upstream into DB lock contention.
+- **Circuit breaker** (count-based, window of 10, opens at ≥50% failure rate over ≥5 calls, 30s open state) - once the upstream is clearly unhealthy, further calls fail immediately (`CallNotPermittedException`, mapped to the same 502 as any other unavailability) instead of piling up threads waiting on a struggling dependency.
+- **A transient failure (network error, upstream 5xx) is treated differently from a definitive one (upstream 4xx)** via `CreditCardTransientFailurePredicate`: a 4xx fails on the first attempt (retrying the same bad request changes nothing) and doesn't count against the circuit breaker's failure rate (a bad request on our side, or a genuine "payment not found," isn't evidence the upstream itself is unhealthy). Only network failures and 5xx responses are retried and count as circuit-breaker failures.
+- Retry and circuit-breaker state is visible at `GET /actuator/circuitbreakers` and as Prometheus metrics (`resilience4j_circuitbreaker_*`, `resilience4j_retry_*`) - both verified live: a real run against an unreachable upstream showed exactly 3 attempts ~300ms apart, the circuit opening after 5 buffered failures, and the next call failing in ~76ms instead of the usual ~600-900ms.
+- **Decorator order matters**: retry wraps the circuit breaker (not the reverse), so once the breaker opens partway through a retry sequence, the remaining attempts in that sequence fail fast instead of still hitting the network - the standard Resilience4j composition for this scenario.
+
+**Considered and rejected: OpenFeign as the client.** Two variants were evaluated for this same call: a hand-written `@FeignClient` interface (Spring Cloud OpenFeign) compiled and ran cleanly against this stack, but was set aside since it doesn't add real value for a single external, non-load-balanced third-party endpoint - Feign's main advantage is declarative load-balancing across sibling microservice instances via service discovery, which doesn't apply here. Generating the client from `Assignment03_creditcardpayment_api.yaml` via `openapi-generator-maven-plugin`'s `feign` library target was also tried and confirmed (via a real build attempt) to hard-fail: it hardcodes both Jackson 2 (`com.fasterxml.jackson.*`, incompatible with this project's Jackson 3-only classpath) and the pre-Jakarta `javax.annotation` namespace. `WebClient` was kept as-is.
+
 ## Docker & Kubernetes
 
 Build and run the container directly:

@@ -32,6 +32,27 @@ app:
         window-hours: 48
 credit-card-validation-service:
   base-url: ${CREDIT_CARD_SERVICE_BASE_URL:http://localhost:9090/host/credit-card-payment-api}
+resilience4j:
+  retry:
+    instances:
+      creditCardValidation:
+        # Kept small and bounded on purpose: a CREDIT_CARD booking holds a DB transaction
+        # and a Postgres advisory lock open across this call (see BookingService), so each
+        # retry attempt directly extends how long that lock is held.
+        max-attempts: 3
+        wait-duration: 300ms
+        retry-exception-predicate: com.velocitymotors.carbooking.client.CreditCardTransientFailurePredicate
+  circuitbreaker:
+    instances:
+      creditCardValidation:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        record-exception-predicate: com.velocitymotors.carbooking.client.CreditCardTransientFailurePredicate
 management:
   endpoint:
     health:
@@ -43,7 +64,13 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus,circuitbreakers
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+    tags:
+      application: ${spring.application.name}
 logging:
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{requestId:-},%X{bookingId:-}] [%thread] %logger{36} - %msg%n"

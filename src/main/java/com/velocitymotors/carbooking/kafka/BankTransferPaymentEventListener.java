@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.velocitymotors.carbooking.logging.MdcContext;
 import com.velocitymotors.carbooking.repository.BookingRepository;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
@@ -22,10 +23,13 @@ public class BankTransferPaymentEventListener {
 
     private final BookingRepository repository;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
 
-    public BankTransferPaymentEventListener(BookingRepository repository, ObjectMapper objectMapper) {
+    public BankTransferPaymentEventListener(
+            BookingRepository repository, ObjectMapper objectMapper, MeterRegistry meterRegistry) {
         this.repository = repository;
         this.objectMapper = objectMapper;
+        this.meterRegistry = meterRegistry;
     }
 
     @KafkaListener(
@@ -39,6 +43,7 @@ public class BankTransferPaymentEventListener {
             event = objectMapper.readValue(message, BankTransferPaymentEvent.class);
         } catch (JacksonException ex) {
             log.warn("Ignoring unparseable bank-transfer-payment-event: {}", message, ex);
+            meterRegistry.counter("bank_transfer_events_total", "outcome", "unparseable").increment();
             return;
         }
         log.debug("Parsed bank-transfer-payment-event paymentId={}", event.paymentId());
@@ -48,6 +53,7 @@ public class BankTransferPaymentEventListener {
 
         if (trimmed.length() < MIN_TRANSACTION_DETAILS_LENGTH) {
             log.warn("Ignoring malformed bank-transfer-payment-event, transactionDetails='{}'", details);
+            meterRegistry.counter("bank_transfer_events_total", "outcome", "malformed").increment();
             return;
         }
 
@@ -57,8 +63,10 @@ public class BankTransferPaymentEventListener {
             int updated = repository.confirmIfPending(bookingId, Instant.now());
             if (updated == 0) {
                 log.warn("No PENDING_PAYMENT booking found for bookingId={} (paymentId={})", bookingId, event.paymentId());
+                meterRegistry.counter("bank_transfer_events_total", "outcome", "no_matching_booking").increment();
             } else {
                 log.info("Booking {} confirmed via bank transfer payment {}", bookingId, event.paymentId());
+                meterRegistry.counter("bank_transfer_events_total", "outcome", "confirmed").increment();
             }
         });
     }

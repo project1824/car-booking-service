@@ -11,6 +11,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import io.micrometer.core.instrument.MeterRegistry;
+
 import com.velocitymotors.carbooking.entity.Booking;
 import com.velocitymotors.carbooking.enums.BookingStatus;
 import com.velocitymotors.carbooking.enums.PaymentMode;
@@ -26,14 +28,17 @@ public class BookingCancellationScheduler {
     private final BookingRepository repository;
     private final Clock clock;
     private final long cancellationWindowHours;
+    private final MeterRegistry meterRegistry;
 
     public BookingCancellationScheduler(
             BookingRepository repository,
             Clock clock,
-            @Value("${app.booking.cancellation.window-hours}") long cancellationWindowHours) {
+            @Value("${app.booking.cancellation.window-hours}") long cancellationWindowHours,
+            MeterRegistry meterRegistry) {
         this.repository = repository;
         this.clock = clock;
         this.cancellationWindowHours = cancellationWindowHours;
+        this.meterRegistry = meterRegistry;
     }
 
     @Scheduled(fixedDelayString = "${app.booking.cancellation.check-interval-ms}")
@@ -53,6 +58,7 @@ public class BookingCancellationScheduler {
                     if (cancelled > 0) {
                         log.info("Booking {} auto-cancelled: bank transfer not received {}h before rental start",
                                 booking.getId(), cancellationWindowHours);
+                        meterRegistry.counter("bookings_autocancelled_total").increment();
                     }
                 });
             }

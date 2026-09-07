@@ -11,6 +11,8 @@ import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import io.micrometer.core.instrument.MeterRegistry;
+
 import com.velocitymotors.carbooking.dto.BookingRequest;
 import com.velocitymotors.carbooking.dto.BookingResponse;
 import com.velocitymotors.carbooking.entity.Booking;
@@ -35,12 +37,14 @@ public class BookingService {
     private final BookingIdGenerator idGenerator;
     private final VehicleValidationService vehicleValidationService;
     private final Map<PaymentMode, PaymentStrategy> strategies;
+    private final MeterRegistry meterRegistry;
 
     public BookingService(
         BookingRepository repository,
         BookingIdGenerator idGenerator,
         VehicleValidationService vehicleValidationService,
-        List<PaymentStrategy> paymentStrategies)
+        List<PaymentStrategy> paymentStrategies,
+        MeterRegistry meterRegistry)
     {
         this.repository = repository;
         this.idGenerator = idGenerator;
@@ -49,6 +53,7 @@ public class BookingService {
                             .flatMap(strategy -> strategy.supportedModes().stream()
                                 .map(mode -> Map.entry(mode, strategy)))
                             .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        this.meterRegistry = meterRegistry;
     }
 
     /**
@@ -100,6 +105,14 @@ public class BookingService {
 
             repository.save(booking);
             log.info("Booking {} persisted with status={}", bookingId, booking.getStatus());
+            // Named "bookings_total" (not "bookings_created_total"): Prometheus/OpenMetrics
+            // treats a trailing "_created" as a reserved suffix (used for counter-creation
+            // timestamps) and strips it, so "bookings_created_total" is silently exported as
+            // "bookings_total" anyway. Naming it that way directly keeps the metric name honest.
+            meterRegistry.counter("bookings_total",
+                    "paymentMode", request.paymentMode().name(),
+                    "status", booking.getStatus().name()
+            ).increment();
             return new BookingResponse(booking.getId(), booking.getStatus());
         });
     }
