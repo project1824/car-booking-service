@@ -1,15 +1,6 @@
 # Car Booking Service
 
 A Spring Boot microservice for **Velocity Motors** that manages car rental bookings, built as part of a take-home assignment. It confirms bookings based on payment method (digital wallet/cash, credit card, or bank transfer), integrates with an external credit-card validation service, consumes bank-transfer payment events from Kafka, and automatically cancels unpaid bank-transfer bookings 48 hours before rental start.
-
-> **Known gaps - things I still need to improve.** This project goes beyond what the assignment actually asked for in a lot of places, Here's what I know is missing or not done the right way, i want to addess this upfront.:
-> 1. **No TLS/HTTPS anywhere.** Every request — including customer name and payment reference — goes over plain HTTP, both locally and in the Docker/Kubernetes setup. In a real deployment this would be handled at the ingress or by a service mesh, but this project doesn't do it at all right now.
-> 2. **No authentication on this branch.** Right now anyone can call `/booking`, no login needed. I did build a JWT-based login on a separate branch (`feature/jwt-authentication`), but kept it out of this branch on purpose so the API stays easy to test/grade without needing a token first.
-> 3. **Booking ID generation isn't safe with more than one pod running.** Each pod keeps its own counter in memory, starting from `repository.count()` when it boots. If two pods start around the same time and both get requests, they can end up generating the same booking ID — and the second insert fails since the ID is a primary key. This needs a real DB sequence or a shared ID generator, not a counter sitting inside each pod.
-> 4. **Distributed tracing was attempted and abandoned.** A real OpenTelemetry + Tempo/Grafana integration was built and live-verified, then reverted after real friction (an OkHttp version conflict from the OTLP exporter, a Tempo bind-address misconfiguration, a missing Spring Boot `WebClient` auto-configuration module). Only correlation-ID log stitching and Micrometer metrics exist today — no real cross-service trace visibility, needed more time to investigate it.
-> 5. **The credit-card-validation-service spec is just read, not actually used in code.** The assignment says to integrate and use the OpenAPI file directly, but we only used it as a reference and wrote the client by hand. Tried generating it with openapi-generator twice (webclient and feign options), both failed because they generate old Jackson 2 code and this project runs on Jackson 3. So we hand-wrote the client to match the spec, and tests cover every response case it documents.Again needed some extra time to investigate this compatibility issue.
-> 6. **The Azure DevOps/AKS pipeline was never run for real.** I wrote a full build/test/SonarQube/security-scan/deploy pipeline with real placeholders for the container registry, SonarQube, AKS, and approvals, but I don't have a real Azure DevOps org or AKS cluster to actually run it against. So it's carefully written, not pipeline-tested - someone plugging in real infra might still hit something I couldn't see from here.
-
 ## Tech Stack
 
 - **Java 21**, **Spring Boot 4.1.1** (Spring Framework 7 / Jackson 3)
@@ -203,31 +194,6 @@ docker run -p 8082:8082 car-booking-service:latest
 ```
 The `Dockerfile` is a multi-stage build (JDK 21 to compile, JRE 21 to run) so the resulting image doesn't carry a full JDK or the Maven build cache, and runs as a non-root user.
 
-**Important when containerized or deployed to Kubernetes:** `KAFKA_BOOTSTRAP_SERVERS` and `CREDIT_CARD_SERVICE_BASE_URL` both default to `localhost:...`, which only resolves correctly for a non-containerized local run — inside a container, `localhost` refers to the container itself, not the host or a sibling service. Override both env vars to point at the real Kafka broker and credit-card service addresses in your environment.
-
-Example manifests are in [`k8s/`](k8s/) (`deployment.yaml`, `service.yaml`, `secret-example.yaml`), wiring the liveness/readiness endpoints above into real Kubernetes probes. Since state lives in PostgreSQL rather than in-process, the deployment runs `replicas: 2` to demonstrate real horizontal scaling.
-
-### Secrets in a real deployment
-
-`k8s/secret-example.yaml` is illustrative only (`"REPLACE_ME"`) — a plain Kubernetes Secret is just base64-encoded, not encrypted at rest by default, and isn't a real secret *store* (no rotation, no access audit trail, no central policy). The app already does the part that's actually its job correctly: every credential (`DB_PASSWORD`) arrives as an environment variable, never hardcoded or baked into the image or a config file — `application.yaml` only ever sees `${DB_PASSWORD:car_booking}`, a placeholder with a local-dev fallback.
-
-What feeds that env var in a real cloud deployment would be a managed secret store — **Azure Key Vault**, **AWS Secrets Manager**, or **GCP Secret Manager** — not a checked-in YAML file. The usual bridge into Kubernetes is one of:
-- A **CSI Secret Store driver** (e.g., the Azure Key Vault Provider for Secrets Store CSI Driver, or AWS's equivalent) mounting the vault's secrets as files or projecting them as env vars directly into the pod, with no plain Kubernetes Secret object in between at all.
-- The **External Secrets Operator**, which syncs a value from the cloud vault into a native Kubernetes Secret on a schedule — the app still reads a normal `secretKeyRef` env var (no code change needed), but the source of truth is the cloud vault, and rotation there propagates automatically.
-
-Either way, the application code and `secretKeyRef` wiring in `deployment.yaml` stay exactly as they are — only *where the secret's value ultimately comes from* changes, which is why this is documented as the intended production target rather than implemented here (no real cloud vault to point at in this environment).
-
-## CI/CD Pipeline (Azure DevOps + AKS)
-
-A single-environment (production) pipeline lives at [`azure-pipelines.yml`](azure-pipelines.yml): build → test (real Postgres/Kafka via Testcontainers) → SonarQube quality gate → security scans (OWASP dependency check, secret scanning, a SAST placeholder) → build & Trivy-scan the Docker image → push image to a container registry, package the Helm chart → **manual approval** → deploy → smoke test. Kept to one environment deliberately — a dev/uat/prod promotion chain is real-world standard for a multi-team org, but more pipeline than a single-service take-home assignment needs; the point here is showing the pieces that belong in a real pipeline, not simulating an org that doesn't exist. The registry is shown as Azure Container Registry (the natural default alongside AKS) — JFrog Artifactory, ECR, or GCR would look almost identical, it's just a service connection swap.
-
-**Rollback is permission-gated and failure-triggered, never automatic or silent**: a healthy deployment finishes and nothing further happens. Only if the deployment or its smoke test actually fails does the pipeline ask a human to approve a rollback — see [`pipelines/templates/deploy-and-rollback.yml`](pipelines/templates/deploy-and-rollback.yml) for exactly how that gating works (Azure DevOps stage conditions, not a manual runbook step).
-
-Deployment itself moved from the plain manifests in `k8s/` to a proper **Helm chart** at [`helm/car-booking-service/`](helm/car-booking-service/). The `k8s/` manifests are left in place as the simpler, single-file reference for a quick manual `kubectl apply`.
-
-Worth flagging directly to whoever's reviewing this: real organizations don't usually keep pipeline templates like the SonarQube/security-scan/Docker ones under `pipelines/templates/` copy-pasted into every service's own repo — they live once in a shared, versioned "pipeline-templates" repository that every project's pipeline references by URL (`resources.repositories` + `- template: x.yml@templates` in Azure DevOps). That's spelled out with a real example at the top of `azure-pipelines.yml`; it's kept as local files here only because this is a single-repo assignment with no separate template repo to actually point at.
-
-Every piece of real infrastructure the pipeline needs — service connections, the AKS cluster name, the registry/SonarQube details, secrets — is a clearly marked `REPLACE_ME` placeholder; see [`pipelines/README.md`](pipelines/README.md) for the full setup checklist. Stated plainly, matching the gaps called out at the top of this file: **this pipeline has never run against real Azure DevOps/AKS/SonarQube infrastructure** (none of that exists in this environment) — it's written carefully and consistently, but "complete" here means "ready to point at real infrastructure," not "pipeline-tested."
 
 ## Assumptions & Design Decisions
 
