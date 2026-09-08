@@ -1,14 +1,15 @@
 package com.velocitymotors.carbooking.config;
 
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.client.RestClient;
 
 @Configuration
-public class WebClientConfig {
+public class RestClientConfig {
 
     @Bean
-    public WebClient.Builder webClientBuilder() {
-        return WebClient.builder();
+    public RestClient.Builder restClientBuilder() {
+        return RestClient.builder();
     }
 }

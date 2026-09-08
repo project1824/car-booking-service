@@ -28,8 +28,6 @@ public class BookingController {
 
     @PostMapping(version = "1.0")
     public ResponseEntity<BookingResponse> confirmBooking(@Valid @RequestBody BookingRequest request) {
-        // Deliberately omit customerName/paymentReference from this line - they're
-        // customer PII/payment data and don't belong in application logs.
         log.info("Received booking request: vehicleId={}, vehicleCategory={}, paymentMode={}, rentalStartDate={}, rentalEndDate={}",
                 request.vehicleId(), request.vehicleCategory(), request.paymentMode(),
                 request.rentalStartDate(), request.rentalEndDate());
@@ -39,4 +37,5 @@ public class BookingController {
         log.info("Booking request completed: bookingId={}, status={}", response.bookingId(), response.status());
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
+
 }

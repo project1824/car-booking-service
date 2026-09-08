@@ -7,7 +7,7 @@ A Spring Boot microservice for **Velocity Motors** that manages car rental booki
 > 2. **No authentication on this branch.** Right now anyone can call `/booking`, no login needed. I did build a JWT-based login on a separate branch (`feature/jwt-authentication`), but kept it out of this branch on purpose so the API stays easy to test/grade without needing a token first.
 > 3. **Booking ID generation isn't safe with more than one pod running.** Each pod keeps its own counter in memory, starting from `repository.count()` when it boots. If two pods start around the same time and both get requests, they can end up generating the same booking ID — and the second insert fails since the ID is a primary key. This needs a real DB sequence or a shared ID generator, not a counter sitting inside each pod.
 > 4. **Distributed tracing was attempted and abandoned.** A real OpenTelemetry + Tempo/Grafana integration was built and live-verified, then reverted after real friction (an OkHttp version conflict from the OTLP exporter, a Tempo bind-address misconfiguration, a missing Spring Boot `WebClient` auto-configuration module). Only correlation-ID log stitching and Micrometer metrics exist today — no real cross-service trace visibility, needed more time to investigate it.
-> 5. **The credit-card-validation-service spec is just read, not actually used in code.** The assignment says to integrate and use the OpenAPI file directly, but we only used it as a reference and wrote the client by hand. Tried generating it with openapi-generator twice (webclient and feign options), both failed because they generate old Jackson 2 code and this project runs on Jackson 3. So we hand-wrote the client to match the spec, and tests cover every response case it documents.Again needed some extra time to investigate this compatibility issue.
+> 5. **The credit-card-validation-service spec is read, not code-generated from.** The assignment says to integrate and use the OpenAPI file directly, but we only used it as a reference and wrote the client by hand. Tried generating it with openapi-generator twice (webclient and feign options), both failed because they generate old Jackson 2 code and this project runs on Jackson 3. So we hand-wrote the client to match the spec instead. To actually check the hand-written client matches the spec (not just eyeball it), I ran it through a real OpenAPI tool (`openapi4j`) in `CreditCardValidationServiceContractTest` — and that turned up a genuine bug in the given spec itself: the `status` field was written as `format: enum` with the APPROVED/REJECTED list indented under it, which isn't valid enum syntax, so the enum restriction the spec author clearly meant never actually applied. I fixed that in this project's copy of the spec (a real `enum:` key now), and went a step further: `client/openapi/CreditCardValidationContractValidator` checks every real request/response against this spec live, not just in a test. It's deliberately observability-only though — a mismatch is logged and counted (`credit_card_contract_check_total`), never thrown, so a schema technicality on the upstream's side can't hard-fail a real customer's booking; `CreditCardPaymentStrategy`'s own status check still decides the outcome, same as before.
 > 6. **The Azure DevOps/AKS pipeline was never run for real.** I wrote a full build/test/SonarQube/security-scan/deploy pipeline with real placeholders for the container registry, SonarQube, AKS, and approvals, but I don't have a real Azure DevOps org or AKS cluster to actually run it against. So it's carefully written, not pipeline-tested - someone plugging in real infra might still hit something I couldn't see from here.
 
 ## Tech Stack
@@ -16,7 +16,7 @@ A Spring Boot microservice for **Velocity Motors** that manages car rental booki
 - **Spring Web MVC** — REST API
 - **Spring Data JPA** + **PostgreSQL** — persistence
 - **Spring for Apache Kafka** — consumes `bank-transfer-payment-events`
-- **Spring WebFlux's `WebClient`** — calls the external credit-card-validation-service (no reactive server is run; `WebClient` is used purely as an HTTP client)
+- **Spring's `RestClient`** — calls the external credit-card-validation-service (synchronous by nature — this call was always blocking, so `RestClient` fits better than pulling in the reactive `WebClient`/WebFlux stack for one blocking call)
 - **Spring Boot Actuator** — health, liveness, and readiness endpoints for Kubernetes
 - **Spring Framework 7 native API versioning** — see API Versioning below
 - **Lombok** — reduces entity boilerplate (including `@Slf4j` for every class that logs)
@@ -33,10 +33,10 @@ entity/         Booking (JPA)
 repository/     BookingRepository               — atomic conditional updates, see below
 service/        BookingService, VehicleValidationService, BookingIdGenerator
 payment/        PaymentStrategy + one implementation per payment mode (Strategy pattern)
-client/         CreditCardValidationClient (+ impl), client/dto/*
+client/         CreditCardValidationClient (+ impl), client/dto/*, client/openapi/CreditCardValidationContractValidator
 kafka/          KafkaConsumerConfig, BankTransferPaymentEvent, BankTransferPaymentEventListener
 scheduler/      BookingCancellationScheduler
-config/         ClockConfig, WebClientConfig, WebConfig (API versioning)
+config/         ClockConfig, RestClientConfig, WebConfig (API versioning)
 web/            CorrelationIdFilter               — MDC request-id tagging
 logging/        MethodTraceLoggingAspect (AOP), MdcContext
 exception/      GlobalExceptionHandler + one exception per failure case
