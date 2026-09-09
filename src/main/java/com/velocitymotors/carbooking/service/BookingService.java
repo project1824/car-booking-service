@@ -39,6 +39,7 @@ public class BookingService {
     private final Map<PaymentMode, PaymentStrategy> strategies;
     private final MeterRegistry meterRegistry;
 
+    /** Builds the paymentMode -> strategy map from every PaymentStrategy bean spring finds. */
     public BookingService(
         BookingRepository repository,
         BookingIdGenerator idGenerator,
@@ -57,16 +58,15 @@ public class BookingService {
     }
 
     /**
-     * NOTE on transaction scope: for CREDIT_CARD bookings, strategy.process() below makes
-     * a synchronous, blocking HTTP call to the external validation service - and since
-     * this whole method is one transaction, the DB connection (and the advisory locks
-     * acquired below) stay held for the duration of that external call. Holding a
-     * transaction open across a network call is normally something to avoid, but the
-     * alternative - inserting a placeholder row first, calling out, then updating the
-     * outcome (the same pattern already used for bank transfer) - would change the
-     * credit-card contract from "confirmed synchronously in one response" to "pending
-     * until confirmed asynchronously", which is a bigger behavioral change than this
-     * service's realistic scale justifies. Documented tradeoff, not an oversight.
+     * Validates the request, resolves the right PaymentStrategy for the payment mode,
+     * and saves the booking with whatever status that strategy decides.
+     *
+     * Note: credit card bookings make a blocking http call inside strategy.process()
+     * below, and since this whole method is one transaction, the db connection +
+     * advisory locks stay held for that call. The alternative (insert pending first,
+     * update after, like bank transfer does) would change credit card from "confirmed
+     * in one response" to "confirmed later" - too big a change for what this needs.
+     * Known tradeoff.
      */
     @Transactional
     public BookingResponse createBooking(BookingRequest request) {
@@ -105,10 +105,8 @@ public class BookingService {
 
             repository.save(booking);
             log.info("Booking {} persisted with status={}", bookingId, booking.getStatus());
-            // Named "bookings_total" (not "bookings_created_total"): Prometheus/OpenMetrics
-            // treats a trailing "_created" as a reserved suffix (used for counter-creation
-            // timestamps) and strips it, so "bookings_created_total" is silently exported as
-            // "bookings_total" anyway. Naming it that way directly keeps the metric name honest.
+            // named "bookings_total" not "bookings_created_total" - prometheus strips a
+            // trailing "_created" from counter names anyway, so this just keeps the name honest.
             meterRegistry.counter("bookings_total",
                     "paymentMode", request.paymentMode().name(),
                     "status", booking.getStatus().name()
@@ -118,11 +116,9 @@ public class BookingService {
     }
 
     /**
-     * Serializes concurrent booking attempts for the same vehicle via a Postgres
-     * advisory lock (released automatically when this transaction ends), then checks
-     * for an overlapping active booking. The lock closes the race a plain check-then-
-     * insert would otherwise have: without it, two concurrent requests for the same
-     * vehicle/dates could both pass this check before either one commits.
+     * Locks this vehicle (a postgres advisory lock, released when the transaction ends)
+     * before checking for an overlapping booking, so two requests for the same vehicle
+     * can't both pass the check before either one commits.
      */
     private void checkVehicleAvailable(BookingRequest request) {
         repository.lockVehicle(request.vehicleId());
@@ -136,11 +132,9 @@ public class BookingService {
     }
 
     /**
-     * The credit-card-validation-service only answers "is this reference approved?" -
-     * it has no notion of a reference already having confirmed a different booking.
-     * Without this check, the same paymentReference could confirm two separate bookings
-     * off what is really one underlying card transaction. Same advisory-lock treatment
-     * as checkVehicleAvailable, keyed by the reference instead of the vehicle id.
+     * The credit card service only tells us if a reference is approved, not if we've
+     * already used it for another booking - so we check that ourselves here. Same lock
+     * trick as checkVehicleAvailable, just keyed by the reference instead of vehicle id.
      */
     private void checkPaymentReferenceNotReused(String paymentReference) {
         repository.lockPaymentReference(paymentReference);
@@ -151,6 +145,7 @@ public class BookingService {
         }
     }
 
+    /** End date must be after start date, and the rental can't be longer than 21 days. */
     private void validateRentalPeriod(LocalDate startDate, LocalDate endDate) {
 
         if (startDate == null || endDate == null || !startDate.isBefore(endDate)) {
@@ -164,6 +159,7 @@ public class BookingService {
         log.debug("Rental period validated: {} day(s), from {} to {}", days, startDate, endDate);
     }
 
+    /** Only credit card needs a payment reference - the other modes don't use it. */
     private void validatePaymentReference(BookingRequest request) {
 
         if(request.paymentMode() == PaymentMode.CREDIT_CARD && (request.paymentReference() == null || request.paymentReference().isBlank()) ) {

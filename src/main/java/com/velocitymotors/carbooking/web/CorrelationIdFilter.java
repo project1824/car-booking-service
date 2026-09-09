@@ -13,11 +13,10 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 /**
- * Tags every request (and everything it logs) with a correlation id, so log lines from
- * a single request can be grepped together in production even when requests interleave
- * across threads. Reuses an inbound X-Request-Id if the caller already supplied one
- * (e.g. an upstream gateway), otherwise generates a new one - and always echoes it back
- * in the response header so a caller can quote it when reporting an issue.
+ * Tags every request (and its logs) with a correlation id, so one request's log lines
+ * can be grepped together even when requests interleave across threads. Reuses an
+ * inbound X-Request-Id if the caller sent one, otherwise makes a new one, and echoes it
+ * back in the response header.
  */
 @Component
 public class CorrelationIdFilter extends OncePerRequestFilter {

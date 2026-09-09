@@ -24,6 +24,7 @@ import lombok.extern.slf4j.Slf4j;
 @EnableKafka
 public class KafkaConsumerConfig {
 
+    /** Reads the message as plain strings - BankTransferPaymentEventListener parses the json itself. */
     @Bean
     public ConsumerFactory<String, String> consumerFactory(KafkaProperties kafkaProperties) {
         Map<String, Object> props = kafkaProperties.buildConsumerProperties();
@@ -31,6 +32,7 @@ public class KafkaConsumerConfig {
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         return new DefaultKafkaConsumerFactory<>(props);
     }
+    /** Retries a failed message 3 times, then sends it to the "-dlt" dead letter topic. */
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, String> kafkaListenerContainerFactory(
             ConsumerFactory<String, String> consumerFactory,
@@ -45,10 +47,8 @@ public class KafkaConsumerConfig {
         errorHandler.setRetryListeners((record, ex, deliveryAttempt) ->
                 log.warn("Retry {} processing message at topic={}, partition={}, offset={}: {}",
                         deliveryAttempt, record.topic(), record.partition(), record.offset(), ex.getMessage()));
-        // A malformed message (bad JSON, too-short transactionDetails) can never succeed no
-        // matter how many times it's retried - skip the 3 retries entirely and go straight
-        // to the dead-letter topic instead of wasting 3 seconds retrying an outcome that
-        // can't change.
+        // a malformed message (bad json, too-short transactionDetails) will never succeed no
+        // matter how many retries - skip straight to the dead letter topic instead.
         errorHandler.addNotRetryableExceptions(MalformedBankTransferEventException.class);
         factory.setCommonErrorHandler(errorHandler);
 

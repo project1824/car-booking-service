@@ -19,22 +19,11 @@ import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Checks real credit-card-validation-service request/response traffic against the bundled
- * OpenAPI contract ({@code openapi/credit-card-validation-service.yaml}) - live, not just in
- * a build-time test.
- *
- * <p>Deliberately observability-only: a mismatch is logged and counted
- * ({@code credit_card_contract_check_total}), never thrown. Whether a booking is
- * confirmed or declined is still decided entirely by
- * {@link com.velocitymotors.carbooking.payment.CreditCardPaymentStrategy}'s own status check.
- * The reasoning: the upstream drifting from its documented contract is worth knowing about,
- * but it must never be able to hard-fail a real customer's booking over a schema technicality
- * that {@code CreditCardPaymentStrategy} would have handled fine on its own (it already
- * treats anything other than a literal {@code "APPROVED"} as declined).
- *
- * <p>Same reasoning applies to spec loading itself: if the bundled YAML is ever missing or
- * broken, this component logs it and disables itself rather than stopping the application
- * from starting - a typo in a contract-checking aid should never become a production outage.
+ * Checks real credit card request/response traffic against the yaml spec, live not just
+ * in tests. It's observability only - a mismatch just gets logged and counted
+ * (credit_card_contract_check_total), never thrown. CreditCardPaymentStrategy's own
+ * status check still decides if a booking goes through. If the yaml is missing or
+ * broken, this disables itself and logs an error instead of blocking app startup.
  */
 @Slf4j
 @Component
@@ -52,6 +41,7 @@ public class CreditCardValidationContractValidator {
     private SchemaValidator requestBodyValidator;
     private boolean enabled;
 
+    /** Loads and parses the yaml spec once at startup. If that fails, disables itself instead of throwing. */
     public CreditCardValidationContractValidator(MeterRegistry meterRegistry) {
         this.meterRegistry = meterRegistry;
         try {
@@ -75,6 +65,7 @@ public class CreditCardValidationContractValidator {
         }
     }
 
+    /** Checks the outgoing request json against the spec's request schema. Logs + counts, never throws. */
     public void validateRequest(String requestJson) {
         if (!enabled) {
             return;
@@ -89,6 +80,10 @@ public class CreditCardValidationContractValidator {
         }
     }
 
+    /**
+     * Checks the incoming response json against whatever the spec defines for this exact
+     * status code (a status the spec doesn't mention at all also counts as a mismatch).
+     */
     public void validateResponse(int statusCode, String responseJson) {
         if (!enabled) {
             return;

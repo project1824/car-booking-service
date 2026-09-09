@@ -32,6 +32,13 @@ public class BankTransferPaymentEventListener {
         this.meterRegistry = meterRegistry;
     }
 
+    /**
+     * The booking id always sits in the last 10 characters of transactionDetails, so we
+     * pull it out with a fixed-offset substring instead of split() - the rest of the
+     * field can contain spaces, split() can't. Bad json or a too-short transactionDetails
+     * both throw MalformedBankTransferEventException, which sends the message straight
+     * to the dead letter topic instead of retrying it.
+     */
     @KafkaListener(
         topics = "${app.kafka.topics.bank-transfer-payment-events}",
         containerFactory = "kafkaListenerContainerFactory"

@@ -18,6 +18,11 @@ import com.velocitymotors.carbooking.enums.PaymentMode;
 public interface BookingRepository extends JpaRepository<Booking, String> {
 
 
+/**
+ * Only flips PENDING_PAYMENT to CONFIRMED - a plain read-then-save here could race
+ * with the cancellation scheduler and confirm a booking that just got cancelled.
+ * Returns 0 if nothing matched (already confirmed/cancelled, or no such booking).
+ */
 @Modifying
 @Query("""
     UPDATE Booking b
@@ -27,6 +32,7 @@ public interface BookingRepository extends JpaRepository<Booking, String> {
 """)
 int confirmIfPending(@Param("id") String id, @Param("updatedAt") Instant updatedAt);
 
+/** Same idea as confirmIfPending, the other direction - only cancels if still pending. */
 @Modifying
 @Query("""
     UPDATE Booking b
@@ -41,10 +47,8 @@ int cancelIfPending(@Param("id") String id, @Param("updatedAt") Instant updatedA
     List<Booking> findByPaymentModeAndStatus(PaymentMode paymentMode, BookingStatus status);
 
     /**
-     * True if vehicleId already has a PENDING_PAYMENT or CONFIRMED booking whose date
-     * range overlaps [startDate, endDate] (inclusive). CANCELLED bookings don't count -
-     * cancelling frees the vehicle back up. Two ranges overlap if each range's start is
-     * on or before the other range's end.
+     * True if this vehicle already has a PENDING_PAYMENT or CONFIRMED booking overlapping
+     * this date range. Cancelled bookings don't count - cancelling frees the vehicle up.
      */
     @Query("""
         SELECT COUNT(b) > 0 FROM Booking b
@@ -61,19 +65,15 @@ int cancelIfPending(@Param("id") String id, @Param("updatedAt") Instant updatedA
     boolean existsByPaymentReferenceAndStatus(String paymentReference, BookingStatus status);
 
     /**
-     * Acquires a Postgres advisory lock scoped to this vehicle id, held for the
-     * remainder of the current transaction and released automatically on commit/rollback.
-     * Serializes concurrent createBooking() calls for the SAME vehicle (different
-     * vehicles never block each other) so the "check no overlap, then insert" sequence
-     * below can't race - a plain check-then-insert alone has a window where two
-     * concurrent requests could both pass the overlap check before either commits.
-     * Namespaced with a "vehicle:" prefix so its hash space can't collide with
-     * lockPaymentReference's.
+     * A postgres advisory lock scoped to one vehicle id, held until the transaction ends.
+     * Serializes concurrent bookings for the SAME vehicle (different vehicles never
+     * block each other) so "check no overlap, then insert" can't race. "vehicle:" prefix
+     * keeps it from colliding with lockPaymentReference's keys.
      */
     @Query(value = "SELECT pg_advisory_xact_lock(hashtext('vehicle:' || :vehicleId))", nativeQuery = true)
     Object lockVehicle(@Param("vehicleId") String vehicleId);
 
-    /** Same purpose as lockVehicle, scoped to a payment reference instead. */
+    /** Same as lockVehicle, just keyed by payment reference instead. */
     @Query(value = "SELECT pg_advisory_xact_lock(hashtext('payment-ref:' || :paymentReference))", nativeQuery = true)
     Object lockPaymentReference(@Param("paymentReference") String paymentReference);
 }

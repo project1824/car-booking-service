@@ -34,13 +34,9 @@ public class CreditCardValidationClientImpl implements CreditCardValidationClien
     private final Retry retry;
     private final CircuitBreaker circuitBreaker;
     private final CreditCardValidationContractValidator contractValidator;
-    // Deliberately not a Spring-managed bean: this app's autoconfigured ObjectMapper is
-    // Jackson 3's tools.jackson.databind.ObjectMapper (see JacksonAutoConfiguration in
-    // spring-boot-jackson). openapi4j (and the contract-check code around it) is a Jackson-2
-    // library, needing this com.fasterxml.jackson.databind.ObjectMapper instead - a
-    // completely different, unrelated class despite the similar name. No bean of this type
-    // exists in this app's context, so it's self-instantiated here, same as
-    // CreditCardValidationContractValidator already does.
+    // not a spring bean on purpose - spring's own ObjectMapper here is jackson 3
+    // (tools.jackson...), but openapi4j needs the older jackson 2 ObjectMapper. same class
+    // name, different package, no bean of this type exists in this app.
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public CreditCardValidationClientImpl(
@@ -57,6 +53,12 @@ public class CreditCardValidationClientImpl implements CreditCardValidationClien
         this.contractValidator = contractValidator;
     }
 
+    /**
+     * Wraps callUpstream with retry + circuit breaker - retry on the outside, circuit
+     * breaker on the inside, so once the breaker opens partway through a retry the rest
+     * fail fast instead of hitting the network again. See application.yaml for the
+     * actual thresholds.
+     */
     @Override
     public PaymentStatusResponse checkStatus(String paymentReference) {
         Supplier<PaymentStatusResponse> decorated = Retry.decorateSupplier(retry,
@@ -72,6 +74,11 @@ public class CreditCardValidationClientImpl implements CreditCardValidationClien
         }
     }
 
+    /**
+     * Makes the real call. Fetches the response as a raw string (not straight into
+     * PaymentStatusResponse) so contractValidator can check the actual json against the
+     * openapi spec, both for what we send and what comes back, before it's parsed.
+     */
     private PaymentStatusResponse callUpstream(String paymentReference) {
         log.debug("Calling credit-card-validation-service for reference={}", mask(paymentReference));
         PaymentStatusRequest requestBody = new PaymentStatusRequest(paymentReference);
@@ -105,17 +112,19 @@ public class CreditCardValidationClientImpl implements CreditCardValidationClien
         }
     }
 
+    /** Turns the request into raw json so contractValidator can check it before it's sent. */
     private String writeJson(PaymentStatusRequest request) {
         try {
             return objectMapper.writeValueAsString(request);
         } catch (JsonProcessingException ex) {
-            // Can't happen for this simple single-field record, but if it ever does, contract
-            // validation should just skip this call rather than break the actual payment flow.
+            // won't happen for this simple record, but if it does, just skip the contract
+            // check instead of breaking the actual payment call.
             log.warn("Failed to serialize credit-card-validation-service request for contract validation", ex);
             return "{}";
         }
     }
 
+    /** Parses the raw response body, after contractValidator has already checked it. */
     private PaymentStatusResponse readJson(String responseBody) {
         try {
             return objectMapper.readValue(responseBody, PaymentStatusResponse.class);
@@ -125,7 +134,7 @@ public class CreditCardValidationClientImpl implements CreditCardValidationClien
         }
     }
 
-    /** Never log a payment reference in full - only enough of it to spot in a support ticket. */
+    /** Never log a full payment reference - just enough to spot it in a support ticket. */
     private static String mask(String paymentReference) {
         if (paymentReference == null || paymentReference.length() <= 4) {
             return "****";

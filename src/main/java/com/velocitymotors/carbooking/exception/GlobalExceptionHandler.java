@@ -54,13 +54,10 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Catches any Spring-internal exception that already carries its own correct HTTP
-     * status (e.g. InvalidApiVersionException for an unrecognized X-API-Version, or
-     * NoResourceFoundException for a stray request like /favicon.ico) so it isn't
-     * swallowed into the generic 500 below. ResponseStatusException and
-     * NoResourceFoundException don't share a common Throwable superclass - they're
-     * siblings that both implement Spring's ErrorResponse interface - so the handler
-     * targets that interface directly instead of chasing each concrete type as it's found.
+     * Catches spring's own exceptions that already carry the right http status (like a
+     * bad X-API-Version header, or a stray /favicon.ico request) so they don't fall into
+     * the generic 500 below. These two don't share a common exception class, just the
+     * ErrorResponse interface, so we handle that directly instead.
      */
     @ExceptionHandler({ResponseStatusException.class, NoResourceFoundException.class})
     public ResponseEntity<ErrorResponse> handleSpringErrorResponse(org.springframework.web.ErrorResponse ex) {

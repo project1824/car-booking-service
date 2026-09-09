@@ -33,6 +33,12 @@ public class BankTransferPaymentStrategy implements PaymentStrategy {
         return Set.of(PaymentMode.BANK_TRANSFER);
     }
 
+    /**
+     * Rejects the booking outright if the rental already starts within the cancellation
+     * window (a bank transfer couldn't clear in time anyway), otherwise creates it as
+     * PENDING_PAYMENT - confirmed later by the Kafka listener, or auto-cancelled by the
+     * scheduler if the transfer never arrives.
+     */
     @Override
     public PaymentResult process(BookingRequest request, String bookingId) {
         LocalDateTime deadline = request.rentalStartDate().atStartOfDay().minusHours(cancellationWindowHours);

@@ -8,14 +8,9 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 @ResponseStatus(HttpStatus.BAD_GATEWAY)
 public class CreditCardServiceUnavailableException extends RuntimeException {
 
-    /**
-     * The upstream's own HTTP status, when this was caused by an error response
-     * (e.g. 500). Null when caused by a pure connectivity failure (timeout, connection
-     * refused). Used by the retry/circuit-breaker predicate to tell a transient upstream
-     * fault (worth retrying) apart from a definitive client-side fault like a 4xx
-     * (retrying won't change the outcome, so it shouldn't cost extra attempts or count
-     * against the circuit breaker's failure rate).
-     */
+    // the upstream's actual http status, when we got one (e.g. 500). null if it was a pure
+    // connection failure. used to tell a transient failure (worth retrying) apart from a
+    // real 4xx (retrying won't help).
     private final HttpStatusCode upstreamStatus;
 
     public CreditCardServiceUnavailableException(String message, Throwable cause) {
