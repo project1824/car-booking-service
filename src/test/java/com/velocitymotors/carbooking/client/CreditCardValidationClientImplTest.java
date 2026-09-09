@@ -13,6 +13,8 @@ import com.velocitymotors.carbooking.client.dto.PaymentStatusResponse;
 import com.velocitymotors.carbooking.client.openapi.CreditCardValidationContractValidator;
 import com.velocitymotors.carbooking.exception.CreditCardServiceUnavailableException;
 
+import io.github.resilience4j.bulkhead.BulkheadConfig;
+import io.github.resilience4j.bulkhead.BulkheadRegistry;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.github.resilience4j.retry.RetryConfig;
@@ -37,6 +39,8 @@ class CreditCardValidationClientImplTest {
     private final RetryRegistry retryRegistry = RetryRegistry.of(RetryConfig.custom().maxAttempts(1).build());
     private final CircuitBreakerRegistry circuitBreakerRegistry = CircuitBreakerRegistry.of(
             CircuitBreakerConfig.custom().slidingWindowSize(100).minimumNumberOfCalls(100).build());
+    private final BulkheadRegistry bulkheadRegistry = BulkheadRegistry.of(
+            BulkheadConfig.custom().maxConcurrentCalls(100).build());
     private final CreditCardValidationContractValidator contractValidator =
             new CreditCardValidationContractValidator(meterRegistry);
 
@@ -45,7 +49,7 @@ class CreditCardValidationClientImplTest {
         server = new MockWebServer();
         server.start();
         client = new CreditCardValidationClientImpl(RestClient.builder(), server.url("/").toString(), meterRegistry,
-                retryRegistry, circuitBreakerRegistry, contractValidator);
+                retryRegistry, circuitBreakerRegistry, bulkheadRegistry, contractValidator);
     }
 
     @AfterEach
@@ -116,7 +120,7 @@ class CreditCardValidationClientImplTest {
         deadServer.shutdown();
 
         CreditCardValidationClientImpl unreachableClient = new CreditCardValidationClientImpl(RestClient.builder(),
-                deadUrl, meterRegistry, retryRegistry, circuitBreakerRegistry, contractValidator);
+                deadUrl, meterRegistry, retryRegistry, circuitBreakerRegistry, bulkheadRegistry, contractValidator);
 
         assertThatThrownBy(() -> unreachableClient.checkStatus("DL123456789"))
                 .isInstanceOf(CreditCardServiceUnavailableException.class);

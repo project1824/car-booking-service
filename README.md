@@ -29,8 +29,8 @@ A Spring Boot microservice I built for **Velocity Motors** as a take-home assign
 controller/     BookingController              — REST endpoint
 dto/            BookingRequest, BookingResponse, ErrorResponse
 enums/          VehicleCategory, PaymentMode, BookingStatus
-entity/         Booking (JPA)
-repository/     BookingRepository               — atomic conditional updates, see below
+entity/         Booking, IdempotencyKey (JPA)
+repository/     BookingRepository, IdempotencyKeyRepository — atomic conditional updates, see below
 service/        BookingService, VehicleValidationService, BookingIdGenerator
 payment/        PaymentStrategy + one implementation per payment mode (Strategy pattern)
 client/         CreditCardValidationClient (+ impl), client/dto/*, client/openapi/CreditCardValidationContractValidator
@@ -103,6 +103,11 @@ sequenceDiagram
 - `paymentMode`: `CASH` | `DIGITAL_WALLET` | `CREDIT_CARD` | `BANK_TRANSFER`
 - `paymentReference`: required only when `paymentMode = CREDIT_CARD` (see Assumptions)
 
+**Required header: `Idempotency-Key`.** Send any unique string per booking attempt (a UUID is fine) - a request without this header is rejected with a `400`. A retried request with the same key returns the exact same response instead of creating a second booking or, for `CREDIT_CARD`, calling the validation service a second time. See Assumptions for why it's mandatory rather than optional, and how it's implemented.
+```bash
+curl -X POST http://localhost:8082/booking -H "Idempotency-Key: 3f2a1b4c-..." -H "Content-Type: application/json" -d '{...}'
+```
+
 **Response (`201 Created`):**
 ```json
 { "bookingId": "BKG0000001", "status": "CONFIRMED" }
@@ -121,6 +126,7 @@ sequenceDiagram
 | Credit card validation returned `REJECTED` (or any non-`APPROVED` status) | 422 |
 | credit-card-validation-service unreachable or returned an error | 502 |
 | Unrecognized `X-API-Version` (see API Versioning below) | 400 |
+| Missing `Idempotency-Key` header | 400 |
 | Anything unexpected | 500 |
 
 ### API Versioning
@@ -128,7 +134,7 @@ sequenceDiagram
 This uses Spring Framework 7's built-in API versioning (`WebMvcConfigurer.configureApiVersioning`), not something hand-rolled. Clients send a version in the `X-API-Version` header. Right now there's only one version, `1.0`, and it's also the default - so leaving the header out (which every client and test currently does) still works fine. The point is just future-proofing: a `2.0` handler can be added to `BookingController` later without breaking anyone still calling `1.0`.
 
 ```bash
-curl -X POST http://localhost:8082/booking -H "X-API-Version: 1.0" -H "Content-Type: application/json" -d '{...}'
+curl -X POST http://localhost:8082/booking -H "X-API-Version: 1.0" -H "Idempotency-Key: 3f2a1b4c-..." -H "Content-Type: application/json" -d '{...}'
 ```
 
 Sending an unrecognized version (e.g. `X-API-Version: 2.0`, which doesn't exist yet) returns a clean `400` with a clear message instead of a generic `500`. Spring's own `InvalidApiVersionException` already carries the right status - `GlobalExceptionHandler` just makes sure it isn't swallowed by the catch-all handler below it.
@@ -183,7 +189,8 @@ The only synchronous external HTTP call in the booking path is the credit-card-v
 - **Circuit breaker** (count-based, window of 10, opens at 50%+ failure rate over 5+ calls, stays open 30s) - once the upstream looks clearly unhealthy, further calls fail immediately (`CallNotPermittedException`, mapped to the same 502 as any other unavailability) instead of piling up threads waiting on it.
 - **A transient failure (network error, upstream 5xx) is treated differently from a definitive one (upstream 4xx)** via `CreditCardTransientFailurePredicate`. A 4xx fails on the first try - retrying the same bad request won't change anything - and doesn't count against the circuit breaker (a bad request on my end, or a genuine "payment not found," doesn't mean the upstream is unhealthy). Only network failures and 5xx responses get retried and count as circuit-breaker failures.
 - Retry and circuit-breaker state shows up at `GET /actuator/circuitbreakers` and as Prometheus metrics (`resilience4j_circuitbreaker_*`, `resilience4j_retry_*`) - I checked both live: a real run against an unreachable upstream showed exactly 3 attempts about 300ms apart, the circuit opening after 5 buffered failures, and the next call failing in ~76ms instead of the usual 600-900ms.
-- **Decorator order matters**: retry wraps the circuit breaker, not the other way round. So once the breaker opens partway through a retry sequence, the rest of that sequence fails fast instead of still hitting the network - the usual way to compose these two in Resilience4j.
+- **Decorator order matters**: bulkhead wraps retry, which wraps the circuit breaker (`Bulkhead(Retry(CircuitBreaker(call))))`). Bulkhead outermost means one permit covers a whole `checkStatus()` call, retries included - not one permit per retry attempt. Once the breaker opens partway through a retry sequence, the rest of that sequence fails fast instead of still hitting the network - the usual way to compose these in Resilience4j.
+- **Bulkhead** (max 10 concurrent calls, no queuing) - caps how many `CREDIT_CARD` bookings can be blocked on this call at once, regardless of overall traffic. 10 matches the default HikariCP pool size: past that point the database connection pool is the real bottleneck anyway, so there's no reason to let more callers queue here. `max-wait-duration: 0` means the 11th concurrent call fails immediately instead of waiting for a free permit - waiting would just extend how long `BookingService`'s DB transaction and advisory lock stay open. This protects against a *slow* (not just failing) upstream: retry and circuit breaker mostly react to errors, but a merely slow dependency can still quietly tie up every Tomcat request thread one booking at a time, until unrelated payment modes can't get a thread either. I proved this holds under real concurrency in `CreditCardValidationClientBulkheadTest`: two calls are held open (simulating a slow upstream), a third concurrent call is rejected in under 500ms without ever reaching the network, and the first two still complete normally once released.
 
 ## Database Migrations (Flyway)
 
@@ -192,6 +199,7 @@ Flyway owns the schema, not Hibernate. `spring.jpa.hibernate.ddl-auto` is set to
 - Migrations live in [`src/main/resources/db/migration`](src/main/resources/db/migration). `V1__create_bookings_table.sql` creates the `bookings` table plus three indexes that match how the repository actually queries it (`vehicle_id, status` for the double-booking check, `payment_reference, status` for the payment-reference-reuse check, `payment_mode, status` for the cancellation scheduler). None of these existed under Hibernate's auto-DDL - it never generates indexes beyond the primary key.
 - `Booking` now has explicit `@Column(nullable = false, length = ...)` annotations matching the migration, which tightens up constraints Hibernate's auto-DDL never actually enforced (every field except `paymentReference` is genuinely required).
 - Local dev and Testcontainers Postgres instances both start empty, so migrations always run from `V1` on a fresh database - no separate baseline step needed here.
+- `V2__create_idempotency_keys_table.sql` adds the `idempotency_keys` table backing the `Idempotency-Key` header (see API and Assumptions). No cleanup job exists yet for old rows - the table will grow unbounded until one is added.
 
 ## Docker & Kubernetes
 
@@ -249,6 +257,8 @@ The assignment states *"all details provided are sufficient; you may make additi
 15. **Every `@SpringBootTest` uses real PostgreSQL via Testcontainers, not H2.** I chose full test/production parity over the alternative (H2 for speed, real Postgres only in production). The trade-off, stated plainly: the *whole* test suite now needs Docker to run, not just the opt-in Testcontainers Kafka test - `mvn clean verify` fails without Docker. In a Docker-less environment, `mvn clean package -DskipTests` still compiles and packages the app; running the real tests needs Docker running, same as `docker compose up` already needs for local Kafka/Postgres.
 16. **API versioning uses a header (`X-API-Version`), not a URL prefix (`/v1/booking`).** The assignment doesn't ask for versioning at all - I added it as a production-readiness touch. A header keeps the URL stable across versions and doesn't disturb the existing `/booking` path that all 42 tests and the assignment's own examples use. A path-based scheme would've meant renaming the endpoint everywhere for no real benefit. Since `1.0` is also the default, this is purely additive - no existing caller has to change anything.
 17. **`POST /booking` is left unauthenticated on this branch, on purpose.** In a real deployment, this service would sit behind an API gateway and/or check a JWT issued by a separate identity provider - it would never issue tokens itself. That's assumed rather than built here, so the service stays easy to test without needing a token on every request, and the assignment didn't ask for auth either. A full working version of this (self-issued JWT, `/auth/login`, a protected `/booking`, full test coverage) lives on the `feature/jwt-authentication` branch - kept separate so `main` stays simple to run and grade.
+18. **`Idempotency-Key` is a required header, not an optional one.** An opt-in safety net only protects the callers careful enough to opt in - exactly the ones least likely to need it. The caller most likely to blindly retry after a timeout is the one who'd never think to add the header. Since `CREDIT_CARD` bookings call a real external payment service, a missed retry-protection isn't just a duplicate row, it's a risk of checking/charging the same card twice - serious enough to make this mandatory for every payment mode rather than leave it to chance. A missing header fails fast with a `400` (`MissingRequestHeaderException`, routed through the same `ErrorResponse`-interface handler already used for a bad `X-API-Version`) rather than silently skipping the protection.
+19. **The `Idempotency-Key` record is stored in the same Postgres database as the booking, in the same transaction - not in Redis or any separate store.** The whole point of an idempotency key is "this side effect happens exactly once," and that's only actually guaranteed if the claim row and the booking row commit or roll back together. Splitting them across two systems (say, Redis for the key, Postgres for the booking) reopens exactly the inconsistency this is supposed to close: a crash between the two writes could leave them disagreeing, with no built-in way to notice. `IdempotencyKeyRepository.tryClaim` uses a native `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING` rather than `save()` plus catching a constraint violation, since catching that violation mid-transaction would mark the whole transaction for rollback before there's a chance to look up and replay the existing result. A genuinely concurrent second request with the same key blocks briefly at the database level until the first one commits, then replays its result - it doesn't get its own separate answer. There's no cleanup job yet for old rows in `idempotency_keys` (see Database Migrations) - a real deployment would want one, similar in spirit to `BookingCancellationScheduler`.
 
 ## Running Locally
 

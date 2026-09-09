@@ -17,6 +17,9 @@ import com.velocitymotors.carbooking.client.dto.PaymentStatusResponse;
 import com.velocitymotors.carbooking.client.openapi.CreditCardValidationContractValidator;
 import com.velocitymotors.carbooking.exception.CreditCardServiceUnavailableException;
 
+import io.github.resilience4j.bulkhead.Bulkhead;
+import io.github.resilience4j.bulkhead.BulkheadFullException;
+import io.github.resilience4j.bulkhead.BulkheadRegistry;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
@@ -33,6 +36,7 @@ public class CreditCardValidationClientImpl implements CreditCardValidationClien
     private final MeterRegistry meterRegistry;
     private final Retry retry;
     private final CircuitBreaker circuitBreaker;
+    private final Bulkhead bulkhead;
     private final CreditCardValidationContractValidator contractValidator;
     // not a spring bean on purpose - spring's own ObjectMapper here is jackson 3
     // (tools.jackson...), but openapi4j needs the older jackson 2 ObjectMapper. same class
@@ -45,24 +49,28 @@ public class CreditCardValidationClientImpl implements CreditCardValidationClien
             MeterRegistry meterRegistry,
             RetryRegistry retryRegistry,
             CircuitBreakerRegistry circuitBreakerRegistry,
+            BulkheadRegistry bulkheadRegistry,
             CreditCardValidationContractValidator contractValidator) {
         this.restClient = restClientBuilder.baseUrl(baseUrl).build();
         this.meterRegistry = meterRegistry;
         this.retry = retryRegistry.retry("creditCardValidation");
         this.circuitBreaker = circuitBreakerRegistry.circuitBreaker("creditCardValidation");
+        this.bulkhead = bulkheadRegistry.bulkhead("creditCardValidation");
         this.contractValidator = contractValidator;
     }
 
     /**
-     * Wraps callUpstream with retry + circuit breaker - retry on the outside, circuit
-     * breaker on the inside, so once the breaker opens partway through a retry the rest
-     * fail fast instead of hitting the network again. See application.yaml for the
-     * actual thresholds.
+     * Wraps callUpstream with bulkhead + retry + circuit breaker, in that order from
+     * outside in: bulkhead caps how many calls (across all retries) can be in flight at
+     * once, retry sits outside circuit breaker so once the breaker opens partway through
+     * a retry the rest fail fast instead of hitting the network again. See
+     * application.yaml for the actual thresholds.
      */
     @Override
     public PaymentStatusResponse checkStatus(String paymentReference) {
-        Supplier<PaymentStatusResponse> decorated = Retry.decorateSupplier(retry,
-                CircuitBreaker.decorateSupplier(circuitBreaker, () -> callUpstream(paymentReference)));
+        Supplier<PaymentStatusResponse> decorated = Bulkhead.decorateSupplier(bulkhead,
+                Retry.decorateSupplier(retry,
+                        CircuitBreaker.decorateSupplier(circuitBreaker, () -> callUpstream(paymentReference))));
         try {
             return decorated.get();
         } catch (CallNotPermittedException ex) {
@@ -71,6 +79,12 @@ public class CreditCardValidationClientImpl implements CreditCardValidationClien
             meterRegistry.counter("credit_card_validation_calls_total", "outcome", "circuit_open").increment();
             throw new CreditCardServiceUnavailableException(
                     "credit-card-validation-service is temporarily unavailable (circuit open)", ex);
+        } catch (BulkheadFullException ex) {
+            log.warn("credit-card-validation-service bulkhead is full; failing fast for reference={}",
+                    mask(paymentReference));
+            meterRegistry.counter("credit_card_validation_calls_total", "outcome", "bulkhead_full").increment();
+            throw new CreditCardServiceUnavailableException(
+                    "credit-card-validation-service is temporarily unavailable (too many concurrent calls)", ex);
         }
     }
 

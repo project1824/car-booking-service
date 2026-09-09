@@ -16,8 +16,10 @@ import io.micrometer.core.instrument.MeterRegistry;
 import com.velocitymotors.carbooking.dto.BookingRequest;
 import com.velocitymotors.carbooking.dto.BookingResponse;
 import com.velocitymotors.carbooking.entity.Booking;
+import com.velocitymotors.carbooking.entity.IdempotencyKey;
 import com.velocitymotors.carbooking.enums.BookingStatus;
 import com.velocitymotors.carbooking.enums.PaymentMode;
+import com.velocitymotors.carbooking.exception.IdempotencyKeyInProgressException;
 import com.velocitymotors.carbooking.exception.InvalidBookingDurationException;
 import com.velocitymotors.carbooking.exception.MissingPaymentReferenceException;
 import com.velocitymotors.carbooking.exception.PaymentReferenceAlreadyUsedException;
@@ -26,6 +28,7 @@ import com.velocitymotors.carbooking.logging.MdcContext;
 import com.velocitymotors.carbooking.payment.PaymentResult;
 import com.velocitymotors.carbooking.payment.PaymentStrategy;
 import com.velocitymotors.carbooking.repository.BookingRepository;
+import com.velocitymotors.carbooking.repository.IdempotencyKeyRepository;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -34,6 +37,7 @@ import lombok.extern.slf4j.Slf4j;
 public class BookingService {
 
     private final BookingRepository repository;
+    private final IdempotencyKeyRepository idempotencyKeyRepository;
     private final BookingIdGenerator idGenerator;
     private final VehicleValidationService vehicleValidationService;
     private final Map<PaymentMode, PaymentStrategy> strategies;
@@ -42,12 +46,14 @@ public class BookingService {
     /** Builds the paymentMode -> strategy map from every PaymentStrategy bean spring finds. */
     public BookingService(
         BookingRepository repository,
+        IdempotencyKeyRepository idempotencyKeyRepository,
         BookingIdGenerator idGenerator,
         VehicleValidationService vehicleValidationService,
         List<PaymentStrategy> paymentStrategies,
         MeterRegistry meterRegistry)
     {
         this.repository = repository;
+        this.idempotencyKeyRepository = idempotencyKeyRepository;
         this.idGenerator = idGenerator;
         this.vehicleValidationService = vehicleValidationService;
         this.strategies = paymentStrategies.stream()
@@ -57,9 +63,20 @@ public class BookingService {
         this.meterRegistry = meterRegistry;
     }
 
+    /** Same as createBooking(request, idempotencyKey) with no key - no dedup performed. */
+    public BookingResponse createBooking(BookingRequest request) {
+        return createBooking(request, null);
+    }
+
     /**
      * Validates the request, resolves the right PaymentStrategy for the payment mode,
      * and saves the booking with whatever status that strategy decides.
+     *
+     * If idempotencyKey is given and has already been used before, this replays the
+     * original result instead of doing any of this again - no re-validation, no second
+     * call to a payment strategy (which matters most for CREDIT_CARD, so a retried
+     * request can't check/charge the same card twice). See the README for why the claim
+     * is made in the same transaction as the booking write itself.
      *
      * Note: credit card bookings make a blocking http call inside strategy.process()
      * below, and since this whole method is one transaction, the db connection +
@@ -69,7 +86,12 @@ public class BookingService {
      * Known tradeoff.
      */
     @Transactional
-    public BookingResponse createBooking(BookingRequest request) {
+    public BookingResponse createBooking(BookingRequest request, String idempotencyKey) {
+        boolean hasIdempotencyKey = idempotencyKey != null && !idempotencyKey.isBlank();
+        if (hasIdempotencyKey && idempotencyKeyRepository.tryClaim(idempotencyKey, Instant.now()) == 0) {
+            return replayIdempotentResult(idempotencyKey);
+        }
+
         vehicleValidationService.validate(request.vehicleId());
 
         validateRentalPeriod(request.rentalStartDate(), request.rentalEndDate());
@@ -111,8 +133,31 @@ public class BookingService {
                     "paymentMode", request.paymentMode().name(),
                     "status", booking.getStatus().name()
             ).increment();
+            if (hasIdempotencyKey) {
+                idempotencyKeyRepository.completeClaim(idempotencyKey, booking.getId(), booking.getStatus());
+            }
             return new BookingResponse(booking.getId(), booking.getStatus());
         });
+    }
+
+    /**
+     * Runs when tryClaim finds this key already taken. The row is guaranteed to exist -
+     * it just might not have a result yet, if a genuinely concurrent request is still
+     * running (in practice this is rare: a second INSERT with the same key blocks at
+     * the database level until the first request's transaction ends, so by the time
+     * this runs the result is normally already there).
+     */
+    private BookingResponse replayIdempotentResult(String idempotencyKey) {
+        IdempotencyKey existing = idempotencyKeyRepository.findById(idempotencyKey)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Idempotency key " + idempotencyKey + " was claimed by another request but its row is missing"));
+        if (existing.getBookingId() == null) {
+            throw new IdempotencyKeyInProgressException(
+                    "A request with this idempotency key is still being processed - try again shortly");
+        }
+        log.info("Returning existing booking {} for a repeated idempotency key", existing.getBookingId());
+        meterRegistry.counter("idempotency_key_replays_total").increment();
+        return new BookingResponse(existing.getBookingId(), existing.getStatus());
     }
 
     /**

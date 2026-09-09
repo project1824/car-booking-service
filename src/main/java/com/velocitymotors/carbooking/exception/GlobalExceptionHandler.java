@@ -6,6 +6,7 @@ import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.server.ResponseStatusException;
@@ -47,19 +48,21 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(new ErrorResponse(ex.getMessage(), Instant.now()));
     }
 
-    @ExceptionHandler({VehicleUnavailableException.class, PaymentReferenceAlreadyUsedException.class})
+    @ExceptionHandler({VehicleUnavailableException.class, PaymentReferenceAlreadyUsedException.class,
+        IdempotencyKeyInProgressException.class})
     public ResponseEntity<ErrorResponse> handleConflict(RuntimeException ex) {
         log.warn("Rejected request due to conflict: {}", ex.getMessage());
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorResponse(ex.getMessage(), Instant.now()));
     }
 
     /**
-     * Catches spring's own exceptions that already carry the right http status (like a
-     * bad X-API-Version header, or a stray /favicon.ico request) so they don't fall into
-     * the generic 500 below. These two don't share a common exception class, just the
-     * ErrorResponse interface, so we handle that directly instead.
+     * Catches spring's own exceptions that already carry the right http status (a bad
+     * X-API-Version header, a stray /favicon.ico request, or now a missing
+     * Idempotency-Key header) so they don't fall into the generic 500 below. None of
+     * these share a common exception class, just the ErrorResponse interface, so we
+     * handle that directly instead.
      */
-    @ExceptionHandler({ResponseStatusException.class, NoResourceFoundException.class})
+    @ExceptionHandler({ResponseStatusException.class, NoResourceFoundException.class, MissingRequestHeaderException.class})
     public ResponseEntity<ErrorResponse> handleSpringErrorResponse(org.springframework.web.ErrorResponse ex) {
         String message = ex.getBody().getDetail() != null ? ex.getBody().getDetail() : ex.getBody().getTitle();
         log.warn("Rejected request: {}", message);

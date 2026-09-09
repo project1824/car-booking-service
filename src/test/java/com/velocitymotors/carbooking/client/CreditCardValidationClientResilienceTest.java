@@ -15,6 +15,8 @@ import com.velocitymotors.carbooking.client.dto.PaymentStatusResponse;
 import com.velocitymotors.carbooking.client.openapi.CreditCardValidationContractValidator;
 import com.velocitymotors.carbooking.exception.CreditCardServiceUnavailableException;
 
+import io.github.resilience4j.bulkhead.BulkheadConfig;
+import io.github.resilience4j.bulkhead.BulkheadRegistry;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
@@ -35,6 +37,8 @@ class CreditCardValidationClientResilienceTest {
 
     private MockWebServer server;
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+    private final BulkheadRegistry bulkheadRegistry = BulkheadRegistry.of(
+            BulkheadConfig.custom().maxConcurrentCalls(100).build());
     private final CreditCardValidationContractValidator contractValidator =
             new CreditCardValidationContractValidator(meterRegistry);
 
@@ -48,7 +52,7 @@ class CreditCardValidationClientResilienceTest {
         server = new MockWebServer();
         server.start();
         return new CreditCardValidationClientImpl(RestClient.builder(), server.url("/").toString(), meterRegistry,
-                retryRegistry, cbRegistry, contractValidator);
+                retryRegistry, cbRegistry, bulkheadRegistry, contractValidator);
     }
 
     @Test

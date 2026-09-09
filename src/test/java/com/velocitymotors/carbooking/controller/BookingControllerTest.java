@@ -38,6 +38,9 @@ class BookingControllerTest {
             }
             """;
 
+    private static final String IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
+    private static final String TEST_IDEMPOTENCY_KEY = "test-idempotency-key";
+
     @Autowired
     private MockMvc mockMvc;
 
@@ -46,10 +49,11 @@ class BookingControllerTest {
 
     @Test
     void returnsCreatedWithBookingResponseOnSuccess() throws Exception {
-        when(bookingService.createBooking(any(BookingRequest.class)))
+        when(bookingService.createBooking(any(BookingRequest.class), any()))
                 .thenReturn(new BookingResponse("BKG0000001", BookingStatus.CONFIRMED));
 
         mockMvc.perform(post("/booking")
+                        .header(IDEMPOTENCY_KEY_HEADER, TEST_IDEMPOTENCY_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_REQUEST_JSON))
                 .andExpect(status().isCreated())
@@ -72,6 +76,7 @@ class BookingControllerTest {
                 """;
 
         mockMvc.perform(post("/booking")
+                        .header(IDEMPOTENCY_KEY_HEADER, TEST_IDEMPOTENCY_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(invalidJson))
                 .andExpect(status().isBadRequest())
@@ -81,11 +86,22 @@ class BookingControllerTest {
     }
 
     @Test
+    void returnsBadRequestWhenIdempotencyKeyHeaderMissing() throws Exception {
+        mockMvc.perform(post("/booking")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(VALID_REQUEST_JSON))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(bookingService);
+    }
+
+    @Test
     void returnsBadRequestWhenServiceThrowsInvalidVehicleException() throws Exception {
-        when(bookingService.createBooking(any(BookingRequest.class)))
+        when(bookingService.createBooking(any(BookingRequest.class), any()))
                 .thenThrow(new InvalidVehicleException("Vehicle ID is invalid: BAD"));
 
         mockMvc.perform(post("/booking")
+                        .header(IDEMPOTENCY_KEY_HEADER, TEST_IDEMPOTENCY_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_REQUEST_JSON))
                 .andExpect(status().isBadRequest())
@@ -94,10 +110,11 @@ class BookingControllerTest {
 
     @Test
     void returnsUnprocessableContentWhenServiceThrowsPaymentDeclinedException() throws Exception {
-        when(bookingService.createBooking(any(BookingRequest.class)))
+        when(bookingService.createBooking(any(BookingRequest.class), any()))
                 .thenThrow(new PaymentDeclinedException("Credit card payment was not approved, status=REJECTED"));
 
         mockMvc.perform(post("/booking")
+                        .header(IDEMPOTENCY_KEY_HEADER, TEST_IDEMPOTENCY_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_REQUEST_JSON))
                 .andExpect(status().is(422));
@@ -105,11 +122,12 @@ class BookingControllerTest {
 
     @Test
     void returnsBadGatewayWhenServiceThrowsCreditCardServiceUnavailableException() throws Exception {
-        when(bookingService.createBooking(any(BookingRequest.class)))
+        when(bookingService.createBooking(any(BookingRequest.class), any()))
                 .thenThrow(new CreditCardServiceUnavailableException(
                         "Unable to reach credit-card-validation-service", new RuntimeException("boom")));
 
         mockMvc.perform(post("/booking")
+                        .header(IDEMPOTENCY_KEY_HEADER, TEST_IDEMPOTENCY_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_REQUEST_JSON))
                 .andExpect(status().isBadGateway());
