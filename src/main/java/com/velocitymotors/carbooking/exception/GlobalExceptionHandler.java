@@ -36,6 +36,12 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(new ErrorResponse(ex.getMessage(), Instant.now()));
     }
 
+    @ExceptionHandler(BookingNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNotFound(BookingNotFoundException ex) {
+        log.warn("Rejected request: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ErrorResponse(ex.getMessage(), Instant.now()));
+    }
+
     @ExceptionHandler(PaymentDeclinedException.class)
     public ResponseEntity<ErrorResponse> handlePaymentDeclined(PaymentDeclinedException ex) {
         log.warn("Payment declined: {}", ex.getMessage());

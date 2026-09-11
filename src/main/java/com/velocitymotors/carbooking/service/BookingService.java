@@ -19,6 +19,7 @@ import com.velocitymotors.carbooking.entity.Booking;
 import com.velocitymotors.carbooking.entity.IdempotencyKey;
 import com.velocitymotors.carbooking.enums.BookingStatus;
 import com.velocitymotors.carbooking.enums.PaymentMode;
+import com.velocitymotors.carbooking.exception.BookingNotFoundException;
 import com.velocitymotors.carbooking.exception.IdempotencyKeyInProgressException;
 import com.velocitymotors.carbooking.exception.InvalidBookingDurationException;
 import com.velocitymotors.carbooking.exception.MissingPaymentReferenceException;
@@ -138,6 +139,17 @@ public class BookingService {
             }
             return new BookingResponse(booking.getId(), booking.getStatus());
         });
+    }
+
+    /**
+     * Needed mainly for BANK_TRANSFER: that mode confirms asynchronously via a Kafka
+     * event, sometime after the original POST response, so this is the only way a
+     * caller finds out it actually happened.
+     */
+    public BookingResponse getBooking(String bookingId) {
+        Booking booking = repository.findById(bookingId)
+                .orElseThrow(() -> new BookingNotFoundException("No booking found with id " + bookingId));
+        return new BookingResponse(booking.getId(), booking.getStatus());
     }
 
     /**

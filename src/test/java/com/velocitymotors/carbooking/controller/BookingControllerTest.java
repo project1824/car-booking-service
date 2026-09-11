@@ -4,6 +4,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -18,6 +19,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import com.velocitymotors.carbooking.dto.BookingRequest;
 import com.velocitymotors.carbooking.dto.BookingResponse;
 import com.velocitymotors.carbooking.enums.BookingStatus;
+import com.velocitymotors.carbooking.exception.BookingNotFoundException;
 import com.velocitymotors.carbooking.exception.CreditCardServiceUnavailableException;
 import com.velocitymotors.carbooking.exception.InvalidVehicleException;
 import com.velocitymotors.carbooking.exception.PaymentDeclinedException;
@@ -131,5 +133,26 @@ class BookingControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_REQUEST_JSON))
                 .andExpect(status().isBadGateway());
+    }
+
+    @Test
+    void returnsOkWithBookingStatusOnGet() throws Exception {
+        when(bookingService.getBooking("BKG0000001"))
+                .thenReturn(new BookingResponse("BKG0000001", BookingStatus.PENDING_PAYMENT));
+
+        mockMvc.perform(get("/booking/BKG0000001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.bookingId").value("BKG0000001"))
+                .andExpect(jsonPath("$.status").value("PENDING_PAYMENT"));
+    }
+
+    @Test
+    void returnsNotFoundWhenBookingDoesNotExist() throws Exception {
+        when(bookingService.getBooking("BKG9999999"))
+                .thenThrow(new BookingNotFoundException("No booking found with id BKG9999999"));
+
+        mockMvc.perform(get("/booking/BKG9999999"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("No booking found with id BKG9999999"));
     }
 }

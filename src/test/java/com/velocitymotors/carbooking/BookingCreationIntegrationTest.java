@@ -117,6 +117,33 @@ class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
+    void getBookingAfterCreationReturnsTheSameIdAndStatus() {
+        BookingRequest request = new BookingRequest(
+                "Get Test", "VEH55556",
+                LocalDate.now().plusDays(5), LocalDate.now().plusDays(7),
+                VehicleCategory.SUV, PaymentMode.CASH, null);
+
+        ResponseEntity<BookingResponse> createResponse = postBooking(request, BookingResponse.class);
+        String bookingId = createResponse.getBody().bookingId();
+
+        ResponseEntity<BookingResponse> getResponse =
+                restTemplate.getForEntity("/booking/" + bookingId, BookingResponse.class);
+
+        assertThat(getResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(getResponse.getBody()).isNotNull();
+        assertThat(getResponse.getBody().bookingId()).isEqualTo(bookingId);
+        assertThat(getResponse.getBody().status()).isEqualTo(BookingStatus.CONFIRMED);
+    }
+
+    @Test
+    void getBookingForAnUnknownIdReturns404() {
+        ResponseEntity<ErrorResponse> response =
+                restTemplate.getForEntity("/booking/BKG9999999", ErrorResponse.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
     void creditCardBookingApprovedByRealValidationCallIsConfirmed() {
         creditCardMockServer.enqueue(new MockResponse()
                 .setResponseCode(200)

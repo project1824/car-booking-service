@@ -76,4 +76,12 @@ int cancelIfPending(@Param("id") String id, @Param("updatedAt") Instant updatedA
     /** Same as lockVehicle, just keyed by payment reference instead. */
     @Query(value = "SELECT pg_advisory_xact_lock(hashtext('payment-ref:' || :paymentReference))", nativeQuery = true)
     Object lockPaymentReference(@Param("paymentReference") String paymentReference);
+
+    /**
+     * Backs BookingIdGenerator. A real postgres sequence, not an in-memory counter, so
+     * two app instances calling this at the same time still always get different values -
+     * nextval() is atomic at the database level, no lock needed on our side.
+     */
+    @Query(value = "SELECT nextval('booking_id_seq')", nativeQuery = true)
+    long nextBookingIdSequence();
 }

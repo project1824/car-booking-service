@@ -31,6 +31,7 @@ import com.velocitymotors.carbooking.entity.IdempotencyKey;
 import com.velocitymotors.carbooking.enums.BookingStatus;
 import com.velocitymotors.carbooking.enums.PaymentMode;
 import com.velocitymotors.carbooking.enums.VehicleCategory;
+import com.velocitymotors.carbooking.exception.BookingNotFoundException;
 import com.velocitymotors.carbooking.exception.IdempotencyKeyInProgressException;
 import com.velocitymotors.carbooking.exception.InvalidBookingDurationException;
 import com.velocitymotors.carbooking.exception.InvalidVehicleException;
@@ -271,6 +272,28 @@ class BookingServiceTest {
         verifyNoInteractions(vehicleValidationService, idGenerator);
         verify(strategy, never()).process(any(), any());
         verify(repository, never()).save(any());
+    }
+
+    @Test
+    void getBookingReturnsStatusForAnExistingBooking() {
+        Booking booking = Booking.builder()
+                .id("BKG0000001")
+                .status(BookingStatus.CONFIRMED)
+                .build();
+        when(repository.findById("BKG0000001")).thenReturn(java.util.Optional.of(booking));
+
+        BookingResponse response = bookingService.getBooking("BKG0000001");
+
+        assertThat(response.bookingId()).isEqualTo("BKG0000001");
+        assertThat(response.status()).isEqualTo(BookingStatus.CONFIRMED);
+    }
+
+    @Test
+    void getBookingThrowsWhenNoSuchBookingExists() {
+        when(repository.findById("BKG9999999")).thenReturn(java.util.Optional.empty());
+
+        assertThatThrownBy(() -> bookingService.getBooking("BKG9999999"))
+                .isInstanceOf(BookingNotFoundException.class);
     }
 
     private BookingRequest bookingRequest(PaymentMode paymentMode, String paymentReference) {

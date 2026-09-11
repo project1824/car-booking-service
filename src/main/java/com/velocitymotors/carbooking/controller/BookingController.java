@@ -3,6 +3,8 @@ package com.velocitymotors.carbooking.controller;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -46,6 +48,16 @@ public class BookingController {
 
         log.info("Booking request completed: bookingId={}, status={}", response.bookingId(), response.status());
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
+    /**
+     * No Idempotency-Key here on purpose - a GET has no side effect to deduplicate,
+     * that header is only meaningful on the POST above.
+     */
+    @GetMapping(value = "/{id}", version = "1.0")
+    public ResponseEntity<BookingResponse> getBooking(@PathVariable String id) {
+        BookingResponse response = bookingService.getBooking(id);
+        return ResponseEntity.ok(response);
     }
 
 }

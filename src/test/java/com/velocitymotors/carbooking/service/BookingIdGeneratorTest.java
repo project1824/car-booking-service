@@ -21,12 +21,13 @@ class BookingIdGeneratorTest {
 
     @BeforeEach
     void setUp() {
-        when(repository.count()).thenReturn(0L);
         generator = new BookingIdGenerator(repository);
     }
 
     @Test
     void generatesTenCharacterIdWithBkgPrefix() {
+        when(repository.nextBookingIdSequence()).thenReturn(1L);
+
         String id = generator.generate();
 
         assertThat(id).hasSize(10);
@@ -34,11 +35,40 @@ class BookingIdGeneratorTest {
     }
 
     @Test
-    void generatesSequentiallyIncreasingIds() {
+    void scramblesTheRawSequenceValueInsteadOfUsingItDirectly() {
+        // (1 * 6_700_417) % 10_000_000 = 6700417 - computed and verified independently,
+        // not just asserting whatever the code happens to produce.
+        when(repository.nextBookingIdSequence()).thenReturn(1L);
+
+        String id = generator.generate();
+
+        assertThat(id).isEqualTo("BKG6700417");
+    }
+
+    @Test
+    void consecutiveSequenceValuesDoNotProduceConsecutiveOrNearbyIds() {
+        when(repository.nextBookingIdSequence()).thenReturn(1L, 2L, 3L);
+
         String first = generator.generate();
         String second = generator.generate();
+        String third = generator.generate();
 
-        assertThat(first).isNotEqualTo(second);
-        assertThat(second).isEqualTo("BKG0000002");
+        // this is the actual point of the scramble - sequence 1,2,3 must not read back
+        // as booking numbers 1,2,3 (or anything else obviously incrementing).
+        assertThat(first).isEqualTo("BKG6700417");
+        assertThat(second).isEqualTo("BKG3400834");
+        assertThat(third).isEqualTo("BKG0101251");
+    }
+
+    @Test
+    void differentSequenceValuesNeverProduceTheSameId() {
+        when(repository.nextBookingIdSequence()).thenReturn(1L, 2L, 3L, 4L, 5L);
+
+        java.util.Set<String> ids = new java.util.HashSet<>();
+        for (int i = 0; i < 5; i++) {
+            ids.add(generator.generate());
+        }
+
+        assertThat(ids).hasSize(5);
     }
 }
