@@ -9,11 +9,14 @@ import java.time.Duration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.client.RestClient;
 
 import com.velocitymotors.carbooking.client.dto.PaymentStatusResponse;
+import com.velocitymotors.carbooking.client.openapi.CreditCardValidationContractValidator;
 import com.velocitymotors.carbooking.exception.CreditCardServiceUnavailableException;
 
+import io.github.resilience4j.bulkhead.BulkheadConfig;
+import io.github.resilience4j.bulkhead.BulkheadRegistry;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
@@ -34,6 +37,10 @@ class CreditCardValidationClientResilienceTest {
 
     private MockWebServer server;
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+    private final BulkheadRegistry bulkheadRegistry = BulkheadRegistry.of(
+            BulkheadConfig.custom().maxConcurrentCalls(100).build());
+    private final CreditCardValidationContractValidator contractValidator =
+            new CreditCardValidationContractValidator(meterRegistry);
 
     @AfterEach
     void tearDown() throws IOException {
@@ -44,8 +51,8 @@ class CreditCardValidationClientResilienceTest {
             throws IOException {
         server = new MockWebServer();
         server.start();
-        return new CreditCardValidationClientImpl(
-                WebClient.builder(), server.url("/").toString(), meterRegistry, retryRegistry, cbRegistry);
+        return new CreditCardValidationClientImpl(RestClient.builder(), server.url("/").toString(), meterRegistry,
+                retryRegistry, cbRegistry, bulkheadRegistry, contractValidator);
     }
 
     @Test

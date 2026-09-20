@@ -8,6 +8,11 @@ import com.velocitymotors.carbooking.exception.InvalidVehicleException;
 
 import lombok.extern.slf4j.Slf4j;
 
+/**
+ * Stand-in for a real vehicle/fleet service - just checks the id looks right (5-10
+ * uppercase letters/digits). Swap validate() for a real call when there's an actual
+ * fleet service to check against.
+ */
 @Slf4j
 @Component
 public class VehicleValidationService {

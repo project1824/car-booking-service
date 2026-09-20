@@ -41,6 +41,12 @@ public class BookingCancellationScheduler {
         this.meterRegistry = meterRegistry;
     }
 
+    /**
+     * Runs on a fixed delay, finds every PENDING_PAYMENT bank transfer booking, and
+     * cancels the ones whose rental start is now within the cancellation window with no
+     * payment received. Uses cancelIfPending (not a plain save) so this can't race with
+     * the Kafka listener confirming the same booking at the same time.
+     */
     @Scheduled(fixedDelayString = "${app.booking.cancellation.check-interval-ms}")
     @Transactional
     public void cancelExpiredBankTransferBookings() {

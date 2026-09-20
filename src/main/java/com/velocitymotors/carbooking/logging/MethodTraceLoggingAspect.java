@@ -8,17 +8,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Generic DEBUG-level entry/exit/timing trace for the service, payment, and client
- * layers - a pure cross-cutting concern with no business meaning of its own, which is
- * exactly what AOP is for (as opposed to the business-specific log.info/log.warn calls
- * inside those methods, which stay as explicit code since they carry meaning an aspect
- * can't infer).
- *
- * Deliberately does NOT log method arguments or return values: several methods in scope
- * take BookingRequest (customer name) or a payment reference, and a generic aspect has
- * no way to know which fields are safe to print. Logging "this method ran, and took Xms"
- * is enough for tracing call flow and performance without undoing the deliberate
- * PII/payment-reference masking done explicitly elsewhere (e.g. CreditCardValidationClientImpl).
+ * Debug-level entry/exit/timing trace for the service, payment and client classes -
+ * pure cross-cutting logging, so aop fits well here (the actual business
+ * log.info/log.warn calls stay explicit in the code since they carry meaning this can't
+ * infer). Deliberately skips logging arguments/return values - some methods take a
+ * booking request or payment reference, and a generic aspect can't know what's safe to
+ * print.
  */
 @Aspect
 @Component
@@ -27,6 +22,7 @@ public class MethodTraceLoggingAspect {
     @Around("execution(public * com.velocitymotors.carbooking.service..*(..)) || "
             + "execution(public * com.velocitymotors.carbooking.payment..*(..)) || "
             + "execution(public * com.velocitymotors.carbooking.client..*(..))")
+    /** Logs into the target class's own logger, so the trace lines look like they came from that class. */
     public Object traceMethod(ProceedingJoinPoint joinPoint) throws Throwable {
         Logger log = LoggerFactory.getLogger(joinPoint.getTarget().getClass());
         String method = joinPoint.getSignature().toShortString();

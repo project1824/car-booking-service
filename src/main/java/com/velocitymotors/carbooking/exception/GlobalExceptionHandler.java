@@ -6,6 +6,7 @@ import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.server.ResponseStatusException;
@@ -35,6 +36,12 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(new ErrorResponse(ex.getMessage(), Instant.now()));
     }
 
+    @ExceptionHandler(BookingNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNotFound(BookingNotFoundException ex) {
+        log.warn("Rejected request: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ErrorResponse(ex.getMessage(), Instant.now()));
+    }
+
     @ExceptionHandler(PaymentDeclinedException.class)
     public ResponseEntity<ErrorResponse> handlePaymentDeclined(PaymentDeclinedException ex) {
         log.warn("Payment declined: {}", ex.getMessage());
@@ -47,22 +54,21 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(new ErrorResponse(ex.getMessage(), Instant.now()));
     }
 
-    @ExceptionHandler({VehicleUnavailableException.class, PaymentReferenceAlreadyUsedException.class})
+    @ExceptionHandler({VehicleUnavailableException.class, PaymentReferenceAlreadyUsedException.class,
+        IdempotencyKeyInProgressException.class})
     public ResponseEntity<ErrorResponse> handleConflict(RuntimeException ex) {
         log.warn("Rejected request due to conflict: {}", ex.getMessage());
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorResponse(ex.getMessage(), Instant.now()));
     }
 
     /**
-     * Catches any Spring-internal exception that already carries its own correct HTTP
-     * status (e.g. InvalidApiVersionException for an unrecognized X-API-Version, or
-     * NoResourceFoundException for a stray request like /favicon.ico) so it isn't
-     * swallowed into the generic 500 below. ResponseStatusException and
-     * NoResourceFoundException don't share a common Throwable superclass - they're
-     * siblings that both implement Spring's ErrorResponse interface - so the handler
-     * targets that interface directly instead of chasing each concrete type as it's found.
+     * Catches spring's own exceptions that already carry the right http status (a bad
+     * X-API-Version header, a stray /favicon.ico request, or now a missing
+     * Idempotency-Key header) so they don't fall into the generic 500 below. None of
+     * these share a common exception class, just the ErrorResponse interface, so we
+     * handle that directly instead.
      */
-    @ExceptionHandler({ResponseStatusException.class, NoResourceFoundException.class})
+    @ExceptionHandler({ResponseStatusException.class, NoResourceFoundException.class, MissingRequestHeaderException.class})
     public ResponseEntity<ErrorResponse> handleSpringErrorResponse(org.springframework.web.ErrorResponse ex) {
         String message = ex.getBody().getDetail() != null ? ex.getBody().getDetail() : ex.getBody().getTitle();
         log.warn("Rejected request: {}", message);

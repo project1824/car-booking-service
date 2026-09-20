@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterAll;
@@ -15,6 +16,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.resttestclient.TestRestTemplate;
 import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
@@ -84,7 +87,7 @@ class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
                 LocalDate.now().plusDays(5), LocalDate.now().plusDays(7),
                 VehicleCategory.SUV, PaymentMode.CASH, null);
 
-        ResponseEntity<BookingResponse> response = restTemplate.postForEntity("/booking", request, BookingResponse.class);
+        ResponseEntity<BookingResponse> response = postBooking(request, BookingResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(response.getBody()).isNotNull();
@@ -103,7 +106,7 @@ class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
                 LocalDate.now().plusDays(10), LocalDate.now().plusDays(12),
                 VehicleCategory.LUXURY, PaymentMode.BANK_TRANSFER, null);
 
-        ResponseEntity<BookingResponse> response = restTemplate.postForEntity("/booking", request, BookingResponse.class);
+        ResponseEntity<BookingResponse> response = postBooking(request, BookingResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(response.getBody()).isNotNull();
@@ -111,6 +114,33 @@ class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
 
         Booking persisted = bookingRepository.findById(response.getBody().bookingId()).orElseThrow();
         assertThat(persisted.getStatus()).isEqualTo(BookingStatus.PENDING_PAYMENT);
+    }
+
+    @Test
+    void getBookingAfterCreationReturnsTheSameIdAndStatus() {
+        BookingRequest request = new BookingRequest(
+                "Get Test", "VEH55556",
+                LocalDate.now().plusDays(5), LocalDate.now().plusDays(7),
+                VehicleCategory.SUV, PaymentMode.CASH, null);
+
+        ResponseEntity<BookingResponse> createResponse = postBooking(request, BookingResponse.class);
+        String bookingId = createResponse.getBody().bookingId();
+
+        ResponseEntity<BookingResponse> getResponse =
+                restTemplate.getForEntity("/booking/" + bookingId, BookingResponse.class);
+
+        assertThat(getResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(getResponse.getBody()).isNotNull();
+        assertThat(getResponse.getBody().bookingId()).isEqualTo(bookingId);
+        assertThat(getResponse.getBody().status()).isEqualTo(BookingStatus.CONFIRMED);
+    }
+
+    @Test
+    void getBookingForAnUnknownIdReturns404() {
+        ResponseEntity<ErrorResponse> response =
+                restTemplate.getForEntity("/booking/BKG9999999", ErrorResponse.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
     @Test
@@ -125,7 +155,7 @@ class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
                 LocalDate.now().plusDays(5), LocalDate.now().plusDays(6),
                 VehicleCategory.COMPACT, PaymentMode.CREDIT_CARD, "DL123456789");
 
-        ResponseEntity<BookingResponse> response = restTemplate.postForEntity("/booking", request, BookingResponse.class);
+        ResponseEntity<BookingResponse> response = postBooking(request, BookingResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(response.getBody()).isNotNull();
@@ -147,7 +177,7 @@ class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
                 LocalDate.now().plusDays(5), LocalDate.now().plusDays(6),
                 VehicleCategory.SEDAN, PaymentMode.CREDIT_CARD, "DL999999999");
 
-        ResponseEntity<ErrorResponse> response = restTemplate.postForEntity("/booking", request, ErrorResponse.class);
+        ResponseEntity<ErrorResponse> response = postBooking(request, ErrorResponse.class);
 
         assertThat(response.getStatusCode().value()).isEqualTo(422);
     }
@@ -159,7 +189,7 @@ class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
                 LocalDate.now().plusDays(10), LocalDate.now().plusDays(12),
                 VehicleCategory.SUV, PaymentMode.BANK_TRANSFER, null);
 
-        ResponseEntity<BookingResponse> createResponse = restTemplate.postForEntity("/booking", request, BookingResponse.class);
+        ResponseEntity<BookingResponse> createResponse = postBooking(request, BookingResponse.class);
 
         assertThat(createResponse.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(createResponse.getBody()).isNotNull();
@@ -176,6 +206,13 @@ class BookingCreationIntegrationTest extends AbstractPostgresIntegrationTest {
 
         assertThat(confirmed).isNotNull();
         assertThat(confirmed.getStatus()).isEqualTo(BookingStatus.CONFIRMED);
+    }
+
+    /** Idempotency-Key is mandatory now - a random one per call keeps these tests independent. */
+    private <T> ResponseEntity<T> postBooking(BookingRequest request, Class<T> responseType) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Idempotency-Key", UUID.randomUUID().toString());
+        return restTemplate.postForEntity("/booking", new HttpEntity<>(request, headers), responseType);
     }
 
     private KafkaTemplate<String, String> createKafkaTestProducer() {

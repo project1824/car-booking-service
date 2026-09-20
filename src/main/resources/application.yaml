@@ -59,6 +59,17 @@ resilience4j:
         permitted-number-of-calls-in-half-open-state: 3
         automatic-transition-from-open-to-half-open-enabled: true
         record-exception-predicate: com.velocitymotors.carbooking.client.CreditCardTransientFailurePredicate
+  bulkhead:
+    instances:
+      creditCardValidation:
+        # Caps how many CREDIT_CARD bookings can be blocked on this call at once. Set to
+        # match the default HikariCP pool size (10) - past that point the DB connection
+        # pool is the real limit anyway, so there's no point letting more callers queue
+        # here. max-wait-duration: 0 means fail immediately instead of queuing for a
+        # permit - queuing would only extend how long the DB transaction/advisory lock
+        # from BookingService stays open.
+        max-concurrent-calls: 10
+        max-wait-duration: 0
 management:
   endpoint:
     health:
@@ -70,7 +81,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,prometheus,circuitbreakers
+        include: health,info,prometheus,circuitbreakers,bulkheads
   metrics:
     distribution:
       percentiles-histogram:

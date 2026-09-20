@@ -70,10 +70,6 @@
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-webflux</artifactId>
-		</dependency>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
 
@@ -106,11 +102,6 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-validation-test</artifactId>
-			<scope>test</scope>
-		</dependency>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-webflux-test</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<dependency>
@@ -155,7 +146,22 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-restclient</artifactId>
-			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.openapi4j</groupId>
+			<artifactId>openapi-parser</artifactId>
+			<version>1.0.7</version>
+		</dependency>
+		<dependency>
+			<groupId>org.openapi4j</groupId>
+			<artifactId>openapi-schema-validator</artifactId>
+			<version>1.0.7</version>
+		</dependency>
+		<dependency>
+			<!-- openapi4j needs this to parse a YAML spec (not just JSON) - version managed
+			     by Spring Boot's Jackson BOM. -->
+			<groupId>com.fasterxml.jackson.dataformat</groupId>
+			<artifactId>jackson-dataformat-yaml</artifactId>
 		</dependency>
 	</dependencies>
 

@@ -5,16 +5,11 @@ import java.util.function.Supplier;
 import org.slf4j.MDC;
 
 /**
- * Small helper for the "tag this block's log lines with a booking id" pattern used by
- * BookingService, BankTransferPaymentEventListener, and BookingCancellationScheduler.
- *
- * This is deliberately a plain utility, not an AOP aspect: in all three call sites the
- * booking id is a value computed partway through the method (generated, parsed out of a
- * message, or read off a loop variable), not an incoming parameter available at the
- * method boundary - which is what AOP needs to intercept declaratively. Extracting those
- * inner blocks into separately-proxyable methods just to make an annotation-driven aspect
- * fit would add more indirection than it removes, so a plain try/finally wrapped once
- * here is the more honest fix for the duplication.
+ * Small helper to tag a block's log lines with a booking id - used by BookingService,
+ * BankTransferPaymentEventListener and BookingCancellationScheduler. Kept as a plain
+ * helper instead of an aop aspect since the booking id is usually computed partway
+ * through the method (generated, parsed, or from a loop var), not available as a
+ * parameter at the method boundary where aop would need it.
  */
 public final class MdcContext {
 

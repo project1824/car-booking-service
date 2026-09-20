@@ -32,6 +32,7 @@ public class CreditCardPaymentStrategy implements PaymentStrategy{
        return Set.of(PaymentMode.CREDIT_CARD);
     }
 
+    /** Calls the credit card service and confirms the booking only on a literal "APPROVED". */
     @Override
     public PaymentResult process(BookingRequest request, String bookingId) {
 
